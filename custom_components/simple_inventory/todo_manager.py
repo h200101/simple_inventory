@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from .const import (
     DEFAULT_AUTO_ADD_TO_LIST_QUANTITY,
     FIELD_AUTO_ADD_ENABLED,
+    FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED,
     FIELD_AUTO_ADD_TO_LIST_QUANTITY,
     FIELD_DESCRIPTION,
     FIELD_QUANTITY,
@@ -130,18 +131,16 @@ class TodoManager:
         item_data: InventoryItem,
         require_quantity_check: bool = True,
     ) -> bool:
-        """Check if auto-add should be processed for an item."""
-        auto_add_enabled = item_data.get(FIELD_AUTO_ADD_ENABLED, False)
+        auto_add_enabled = bool(item_data.get(FIELD_AUTO_ADD_ENABLED, False))
         todo_list = item_data.get(FIELD_TODO_LIST)
 
         if not (auto_add_enabled and todo_list):
             return False
 
         if require_quantity_check:
-            quantity = item_data[FIELD_QUANTITY]
-            auto_add_quantity = item_data.get(
-                FIELD_AUTO_ADD_TO_LIST_QUANTITY,
-                DEFAULT_AUTO_ADD_TO_LIST_QUANTITY,
+            quantity = int(item_data.get(FIELD_QUANTITY, 0))
+            auto_add_quantity = int(
+                item_data.get(FIELD_AUTO_ADD_TO_LIST_QUANTITY, DEFAULT_AUTO_ADD_TO_LIST_QUANTITY)
             )
             return quantity <= auto_add_quantity
 
@@ -156,7 +155,6 @@ class TodoManager:
         return f"{item_name} (x{quantity_needed})"
 
     def _supports_description(self, todo_list_entity: str) -> bool:
-        """Return True if the todo entity can store descriptions."""
         if todo_list_entity == "todo.shopping_list":
             return False
 
@@ -168,8 +166,14 @@ class TodoManager:
         return bool(supported & TodoListEntityFeature.SET_DESCRIPTION_ON_ITEM)
 
     def _resolve_item_description(self, item_data: InventoryItem) -> str:
-        """Fetch the item's description string (may be empty)."""
-        return str(item_data.get(FIELD_DESCRIPTION, "") or "").strip()
+        description = str(item_data.get(FIELD_DESCRIPTION, "") or "").strip()
+
+        # If auto-append flag exists on the item, the coordinator will already supply
+        # the normalized description (including inventory ID when enabled).
+        if item_data.get(FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED):
+            return description
+
+        return description
 
     async def _add_todo_item(
         self, todo_list: str, item_name: str, description: str | None = None
@@ -216,14 +220,12 @@ class TodoManager:
         )
 
     async def check_and_add_item(self, item_name: str, item_data: InventoryItem) -> bool:
-        """Check if item should be added to todo list and add it."""
         if not self._should_process_auto_add(item_data, require_quantity_check=True):
             return False
 
-        quantity = item_data[FIELD_QUANTITY]
-        auto_add_quantity = item_data.get(
-            FIELD_AUTO_ADD_TO_LIST_QUANTITY,
-            DEFAULT_AUTO_ADD_TO_LIST_QUANTITY,
+        quantity = int(item_data.get(FIELD_QUANTITY, 0))
+        auto_add_quantity = int(
+            item_data.get(FIELD_AUTO_ADD_TO_LIST_QUANTITY, DEFAULT_AUTO_ADD_TO_LIST_QUANTITY)
         )
         todo_list = item_data.get(FIELD_TODO_LIST)
 
@@ -250,14 +252,12 @@ class TodoManager:
             return False
 
     async def check_and_remove_item(self, item_name: str, item_data: InventoryItem) -> bool:
-        """Check if item should be removed from todo list and remove it."""
         if not self._should_process_auto_add(item_data, require_quantity_check=False):
             return False
 
-        quantity = item_data[FIELD_QUANTITY]
-        auto_add_quantity = item_data.get(
-            FIELD_AUTO_ADD_TO_LIST_QUANTITY,
-            DEFAULT_AUTO_ADD_TO_LIST_QUANTITY,
+        quantity = int(item_data.get(FIELD_QUANTITY, 0))
+        auto_add_quantity = int(
+            item_data.get(FIELD_AUTO_ADD_TO_LIST_QUANTITY, DEFAULT_AUTO_ADD_TO_LIST_QUANTITY)
         )
         todo_list = item_data.get(FIELD_TODO_LIST)
 

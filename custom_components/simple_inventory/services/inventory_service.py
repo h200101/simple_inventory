@@ -76,11 +76,14 @@ class InventoryService(BaseServiceHandler):
         item_kwargs = self._extract_item_kwargs(item_data, ["inventory_id"])
 
         try:
-            self.coordinator.add_item(inventory_id, **item_kwargs)
-            item = self.coordinator.get_item(inventory_id, name)
+            item_id = await self.coordinator.async_add_item(inventory_id, **item_kwargs)
+            if not item_id:
+                self._log_operation_failed("Add item", name, inventory_id)
+                return
 
+            item = await self.coordinator.async_get_item(inventory_id, name)
             if item:
-                await self._handle_todo_auto_add(name, item)
+                await self._handle_todo_auto_add(name, cast(InventoryItem, item))
 
             await self._save_and_log_success(inventory_id, "Added item", name)
 
@@ -99,11 +102,11 @@ class InventoryService(BaseServiceHandler):
         name = data["name"]
 
         try:
-            item = self.coordinator.get_item(inventory_id, name)
+            item = await self.coordinator.async_get_item(inventory_id, name)
 
-            if self.coordinator.remove_item(inventory_id, name):
+            if await self.coordinator.async_remove_item(inventory_id, name):
                 if item:
-                    await self.todo_manager.check_and_remove_item(name, item)
+                    await self.todo_manager.check_and_remove_item(name, cast(InventoryItem, item))
 
                 await self._save_and_log_success(inventory_id, "Removed item", name)
             else:
@@ -124,20 +127,27 @@ class InventoryService(BaseServiceHandler):
         old_name = data["old_name"]
         new_name = data["name"]
 
-        if not self.coordinator.get_item(inventory_id, old_name):
+        existing_item = await self.coordinator.async_get_item(inventory_id, old_name)
+        if not existing_item:
             self._log_item_not_found("Update item", old_name, inventory_id)
             return
 
         update_data = self._extract_update_fields(data)
 
         try:
-            if not self.coordinator.update_item(inventory_id, old_name, new_name, **update_data):
+            updated = await self.coordinator.async_update_item(
+                inventory_id,
+                old_name,
+                new_name,
+                **update_data,
+            )
+            if not updated:
                 self._log_operation_failed("Update item", old_name, inventory_id)
                 return
 
-            updated_item = self.coordinator.get_item(inventory_id, new_name)
+            updated_item = await self.coordinator.async_get_item(inventory_id, new_name)
             if updated_item:
-                await self._handle_todo_auto_add(new_name, updated_item)
+                await self._handle_todo_auto_add(new_name, cast(InventoryItem, updated_item))
 
             await self._save_and_log_success(
                 inventory_id,
@@ -185,57 +195,33 @@ class InventoryService(BaseServiceHandler):
         else:
             raise ValueError("Either 'inventory_id' or 'inventory_name' must be provided")
 
-        items_map = self.coordinator.get_all_items(inventory_id)
-        items_list: list[JsonObjectType] = [
-            cast(JsonObjectType, {"name": name, **details}) for name, details in items_map.items()
-        ]
+        items_map = await self.coordinator.async_list_items(inventory_id)
+        items_list: list[JsonObjectType] = [cast(JsonObjectType, item) for item in items_map]
         items_list.sort(key=lambda item: cast(str, item.get("name", "")).lower())
 
-        return cast(
-            JsonObjectType,
-            {"items": cast(list[JsonValueType], items_list)},
-        )
+        return cast(JsonObjectType, {"items": cast(list[JsonValueType], items_list)})
 
     async def async_get_items_from_all_inventories(self, call: ServiceCall) -> JsonObjectType:
         """Return full list of items grouped by inventory."""
         _ = cast(GetAllItemsServiceData, call.data)  # ensures schema adherence, unused
 
         inventories_data: list[JsonObjectType] = []
-        all_entries = self.hass.config_entries.async_entries(DOMAIN)
-        entry_lookup = {entry.entry_id: entry for entry in all_entries}
-
-        inventories = self.coordinator.get_data().get("inventories", {})
-
-        for inventory_id in inventories:
-            items_map = self.coordinator.get_all_items(inventory_id)
-            items_list: list[JsonObjectType] = [
-                cast(JsonObjectType, {"name": name, **details})
-                for name, details in items_map.items()
-            ]
+        for inventory in await self.coordinator.repository.list_inventories():
+            inventory_id = inventory["id"]
+            items_list = await self.coordinator.async_list_items(inventory_id)
             items_list.sort(key=lambda item: cast(str, item.get("name", "")).lower())
 
-            entry = entry_lookup.get(inventory_id)
-            inventory_name = ""
-            description = ""
-
-            if entry:
-                inventory_name = entry.data.get("name") or entry.title or inventory_id
-                description = entry.data.get("description", "")
-            else:
-                inventory_name = inventory_id
-
-            inventory_payload: JsonObjectType = cast(
-                JsonObjectType,
-                {
-                    "inventory_id": inventory_id,
-                    "inventory_name": inventory_name,
-                    "description": description,
-                    "items": cast(list[JsonValueType], items_list),
-                },
+            inventories_data.append(
+                cast(
+                    JsonObjectType,
+                    {
+                        "inventory_id": inventory_id,
+                        "inventory_name": inventory.get("name", inventory_id),
+                        "description": inventory.get("description", ""),
+                        "items": cast(list[JsonValueType], items_list),
+                    },
+                )
             )
 
-            inventories_data.append(inventory_payload)
-
         inventories_data.sort(key=lambda inv: cast(str, inv.get("inventory_name", "")).lower())
-
         return cast(JsonObjectType, {"inventories": cast(list[JsonValueType], inventories_data)})

@@ -1,5 +1,9 @@
+"""Global expiry notification sensor for Simple Inventory."""
+
+from __future__ import annotations
+
 import logging
-from typing import cast
+from typing import Any
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import Event, HomeAssistant, callback
@@ -21,44 +25,40 @@ class GlobalExpiryNotificationSensor(SensorEntity):
         self._attr_unique_id = "simple_inventory_all_expiring_items"
         self._attr_icon = "mdi:calendar-alert"
         self._attr_native_unit_of_measurement = "items"
-        self._attr_device_class = None
-        self._attr_extra_state_attributes = {}
+        self._attr_extra_state_attributes: dict[str, Any] = {}
         self._attr_device_info = {
             "identifiers": {(DOMAIN, "global_expiry_tracker")},
             "name": "All Items Expiring Soon",
         }
-        self._update_data()
 
     async def async_added_to_hass(self) -> None:
-        """Register callbacks for all inventory updates."""
+        """Register callbacks and perform initial refresh."""
+        await self._async_update_state()
+
         self.async_on_remove(self.hass.bus.async_listen(f"{DOMAIN}_updated", self._handle_update))
 
-        inventories = self.coordinator.get_data().get("inventories", {})
-        for inventory_id in inventories:
+        inventories = await self.coordinator.repository.list_inventories()
+        for inventory in inventories:
             self.async_on_remove(
-                self.hass.bus.async_listen(f"{DOMAIN}_updated_{inventory_id}", self._handle_update)
+                self.hass.bus.async_listen(
+                    f"{DOMAIN}_updated_{inventory['id']}", self._handle_update
+                )
             )
 
-        if hasattr(self.coordinator, "async_add_listener"):
-            self.async_on_remove(
-                self.coordinator.async_add_listener(self._handle_coordinator_update)
-            )
+        self.async_on_remove(self.coordinator.async_add_listener(self._handle_update))
 
     @callback
-    def _handle_update(self, _event: Event) -> None:
-        """Handle inventory updates."""
-        self._update_data()
-        self.async_write_ha_state()
+    def _handle_update(self, _event: Event | None = None) -> None:
+        """Schedule refresh."""
+        self.hass.async_create_task(self._async_update_state())
 
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle coordinator updates."""
-        self._update_data()
-        self.async_write_ha_state()
-
-    def _update_data(self) -> None:
-        """Update sensor data aggregating all inventories."""
-        all_items = self.coordinator.get_items_expiring_soon()
+    async def _async_update_state(self) -> None:
+        """Aggregate expiring items across inventories."""
+        try:
+            all_items = await self.coordinator.async_get_items_expiring_soon()
+        except Exception as err:
+            _LOGGER.error("Failed to refresh global expiry sensor: %s", err)
+            return
 
         for item in all_items:
             item["inventory"] = self._get_inventory_name(item["inventory_id"])
@@ -67,7 +67,7 @@ class GlobalExpiryNotificationSensor(SensorEntity):
         expiring_items = [item for item in all_items if item["days_until_expiry"] >= 0]
 
         total_items = len(all_items)
-        inventories_count = len({item["inventory_id"] for item in all_items}) if all_items else 0
+        inventories_count = len({item["inventory_id"] for item in all_items})
 
         self._attr_native_value = total_items
         self._attr_extra_state_attributes = {
@@ -93,14 +93,15 @@ class GlobalExpiryNotificationSensor(SensorEntity):
         else:
             self._attr_icon = "mdi:calendar-check"
 
+        self.async_write_ha_state()
+
     def _get_inventory_name(self, inventory_id: str) -> str:
-        """Get the friendly name of an inventory by its ID."""
+        """Resolve inventory name from config entries."""
         try:
             config_entries = self.hass.config_entries.async_entries(DOMAIN)
             for entry in config_entries:
                 if entry.entry_id == inventory_id:
-                    return cast(str, entry.data.get("name", "Unknown Inventory"))
+                    return str(entry.data.get("name", "Unknown Inventory"))
         except Exception:
             pass
-
         return "Unknown Inventory"

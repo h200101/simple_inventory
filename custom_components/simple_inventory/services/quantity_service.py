@@ -1,7 +1,7 @@
 """Quantity management service handler."""
 
 import logging
-from typing import Callable, Literal
+from typing import Awaitable, Callable, Literal, cast
 
 from homeassistant.core import HomeAssistant, ServiceCall
 
@@ -30,18 +30,17 @@ class QuantityService(BaseServiceHandler):
         self,
         call: ServiceCall,
         operation: Literal["increment", "decrement"],
-        coordinator_method: Callable,
-        todo_method: Callable,
+        coordinator_method: Callable[[str, str, int], Awaitable[bool]],
+        todo_method: Callable[[str, InventoryItem], Awaitable[bool]],
     ) -> None:
-        """Handle quantity change operations with todo list integration."""
         inventory_id, name = self._get_inventory_and_name(call)
         amount = call.data.get("amount", 1)
 
         try:
-            if coordinator_method(inventory_id, name, amount):
-                item_data = self.coordinator.get_item(inventory_id, name)
+            if await coordinator_method(inventory_id, name, amount):
+                item_data = await self.coordinator.async_get_item(inventory_id, name)
                 if item_data:
-                    await todo_method(name, item_data)
+                    await todo_method(name, cast(InventoryItem, item_data))
 
                 await self._save_and_log_success(
                     inventory_id, f"{operation.capitalize()}ed {name} by {amount}", name
@@ -55,20 +54,18 @@ class QuantityService(BaseServiceHandler):
             )
 
     async def async_increment_item(self, call: ServiceCall) -> None:
-        """Increment item quantity."""
         await self._handle_quantity_change(
             call,
             "increment",
-            self.coordinator.increment_item,
+            self.coordinator.async_increment_item,
             self.todo_manager.check_and_remove_item,
         )
 
     async def async_decrement_item(self, call: ServiceCall) -> None:
-        """Decrement item quantity and check if it should be added to todo list."""
         await self._handle_quantity_change(
             call,
             "decrement",
-            self.coordinator.decrement_item,
+            self.coordinator.async_decrement_item,
             self.todo_manager.check_and_add_item,
         )
 
