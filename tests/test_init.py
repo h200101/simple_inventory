@@ -5,7 +5,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, SupportsResponse
 from typing_extensions import Self
 
 from custom_components.simple_inventory import (
@@ -18,6 +18,8 @@ from custom_components.simple_inventory.const import (
     DOMAIN,
     SERVICE_ADD_ITEM,
     SERVICE_DECREMENT_ITEM,
+    SERVICE_GET_ALL_ITEMS,
+    SERVICE_GET_ITEMS,
     SERVICE_INCREMENT_ITEM,
     SERVICE_REMOVE_ITEM,
     SERVICE_UPDATE_ITEM,
@@ -83,6 +85,8 @@ class TestSimpleInventoryInit:
             mock_service_handler.async_remove_item = AsyncMock()
             mock_service_handler.async_increment_item = AsyncMock()
             mock_service_handler.async_decrement_item = AsyncMock()
+            mock_service_handler.async_get_items_from_all_inventories = AsyncMock()
+            mock_service_handler.async_get_items = AsyncMock()
             mock_service_class.return_value = mock_service_handler
 
             result = await async_setup_entry(mock_hass, mock_config_entry)
@@ -131,11 +135,25 @@ class TestSimpleInventoryInit:
                     mock_service_handler.async_decrement_item,
                     schema=ANY,
                 ),
+                call(
+                    DOMAIN,
+                    SERVICE_GET_ALL_ITEMS,
+                    mock_service_handler.async_get_items_from_all_inventories,
+                    schema=ANY,
+                    supports_response=SupportsResponse.ONLY,
+                ),
+                call(
+                    DOMAIN,
+                    SERVICE_GET_ITEMS,
+                    mock_service_handler.async_get_items,
+                    schema=ANY,
+                    supports_response=SupportsResponse.ONLY,
+                ),
             ]
             mock_hass.services.async_register.assert_has_calls(
                 expected_service_calls, any_order=True
             )
-            assert mock_hass.services.async_register.call_count == 5
+            assert mock_hass.services.async_register.call_count == 7
 
             entry_data = mock_hass.data[DOMAIN][mock_config_entry.entry_id]
             assert entry_data["coordinator"] is mock_coordinator

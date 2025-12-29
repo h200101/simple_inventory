@@ -43,7 +43,7 @@ class RemoveItemServiceData(TypedDict):
 
 class GetItemsServiceData(TypedDict, total=False):
     """Type for get items service call data.
-    
+
     Either inventory_id or inventory_name must be provided, but not both.
     """
 

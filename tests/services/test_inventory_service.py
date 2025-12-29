@@ -336,7 +336,9 @@ class TestInventoryService:
         call = MagicMock()
         call.data = {"inventory_name": "Non-existent Inventory"}
 
-        with pytest.raises(ValueError, match="Inventory with name 'Non-existent Inventory' not found"):
+        with pytest.raises(
+            ValueError, match="Inventory with name 'Non-existent Inventory' not found"
+        ):
             await inventory_service.async_get_items(call)
 
         mock_coordinator.get_all_items.assert_not_called()
@@ -351,7 +353,9 @@ class TestInventoryService:
         call = MagicMock()
         call.data = {}
 
-        with pytest.raises(ValueError, match="Either 'inventory_id' or 'inventory_name' must be provided"):
+        with pytest.raises(
+            ValueError, match="Either 'inventory_id' or 'inventory_name' must be provided"
+        ):
             await inventory_service.async_get_items(call)
 
         mock_coordinator.get_all_items.assert_not_called()
@@ -366,7 +370,9 @@ class TestInventoryService:
         call = MagicMock()
         call.data = {"inventory_id": ""}
 
-        with pytest.raises(ValueError, match="Either 'inventory_id' or 'inventory_name' must be provided"):
+        with pytest.raises(
+            ValueError, match="Either 'inventory_id' or 'inventory_name' must be provided"
+        ):
             await inventory_service.async_get_items(call)
 
         mock_coordinator.get_all_items.assert_not_called()
@@ -381,7 +387,9 @@ class TestInventoryService:
         call = MagicMock()
         call.data = {"inventory_name": ""}
 
-        with pytest.raises(ValueError, match="Either 'inventory_id' or 'inventory_name' must be provided"):
+        with pytest.raises(
+            ValueError, match="Either 'inventory_id' or 'inventory_name' must be provided"
+        ):
             await inventory_service.async_get_items(call)
 
         mock_coordinator.get_all_items.assert_not_called()
@@ -461,7 +469,7 @@ class TestInventoryService:
 
         assert result["inventories"][0]["inventory_id"] == "inv_missing"
         assert result["inventories"][0]["inventory_name"] == "inv_missing"
-        
+
     @pytest.mark.asyncio
     async def test_async_add_item_with_todo_manager(
         self: Self,

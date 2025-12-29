@@ -4,8 +4,11 @@ import logging
 from typing import Any, cast
 
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.util.json import JsonObjectType
 
 from ..const import DOMAIN
+from ..coordinator import SimpleInventoryCoordinator
+from ..todo_manager import TodoManager
 from ..types import (
     AddItemServiceData,
     GetAllItemsServiceData,
@@ -14,8 +17,6 @@ from ..types import (
     RemoveItemServiceData,
     UpdateItemServiceData,
 )
-from ..coordinator import SimpleInventoryCoordinator
-from ..todo_manager import TodoManager
 from .base_service import BaseServiceHandler
 
 _LOGGER = logging.getLogger(__name__)
@@ -150,7 +151,7 @@ class InventoryService(BaseServiceHandler):
                 e,
             )
 
-    async def async_get_items(self, call: ServiceCall) -> dict[str, list[dict[str, Any]]]:
+    async def async_get_items(self, call: ServiceCall) -> JsonObjectType:
         """Return full list of items for an inventory.
 
         Can be called with either inventory_id or inventory_name.
@@ -158,7 +159,7 @@ class InventoryService(BaseServiceHandler):
         { "items": [{"name": str, ...item fields...}, ...] }
         """
         data = cast(GetItemsServiceData, call.data)
-        
+
         # Resolve inventory_id from either inventory_id or inventory_name
         if "inventory_id" in data and data["inventory_id"]:
             inventory_id = data["inventory_id"]
@@ -166,7 +167,7 @@ class InventoryService(BaseServiceHandler):
             # Look up inventory by name
             inventory_name = data["inventory_name"]
             all_entries = self.hass.config_entries.async_entries(DOMAIN)
-            
+
             # Find entry matching the name (case-insensitive)
             matching_entry = None
             for entry in all_entries:
@@ -174,29 +175,27 @@ class InventoryService(BaseServiceHandler):
                 if entry_name == inventory_name.lower():
                     matching_entry = entry
                     break
-            
+
             if not matching_entry:
                 raise ValueError(f"Inventory with name '{inventory_name}' not found")
-            
+
             inventory_id = matching_entry.entry_id
         else:
             raise ValueError("Either 'inventory_id' or 'inventory_name' must be provided")
 
         items_map = self.coordinator.get_all_items(inventory_id)
-        items_list = [{"name": name, **details} for name, details in items_map.items()]
+        items_list: list[JsonObjectType] = [
+            cast(JsonObjectType, {"name": name, **details}) for name, details in items_map.items()
+        ]
+        items_list.sort(key=lambda item: cast(str, item.get("name", "")).lower())
 
-        # Sorting for stable output
-        items_list.sort(key=lambda item: item.get("name", "").lower())
+        return cast(JsonObjectType, {"items": items_list})
 
-        return {"items": items_list}
-
-    async def async_get_items_from_all_inventories(
-        self, call: ServiceCall
-    ) -> dict[str, list[dict[str, Any]]]:
+    async def async_get_items_from_all_inventories(self, call: ServiceCall) -> JsonObjectType:
         """Return full list of items grouped by inventory."""
         _ = cast(GetAllItemsServiceData, call.data)  # ensures schema adherence, unused
 
-        inventories_data: list[dict[str, Any]] = []
+        inventories_data: list[JsonObjectType] = []
         all_entries = self.hass.config_entries.async_entries(DOMAIN)
         entry_lookup = {entry.entry_id: entry for entry in all_entries}
 
@@ -204,8 +203,11 @@ class InventoryService(BaseServiceHandler):
 
         for inventory_id in inventories:
             items_map = self.coordinator.get_all_items(inventory_id)
-            items_list = [{"name": name, **details} for name, details in items_map.items()]
-            items_list.sort(key=lambda item: item.get("name", "").lower())
+            items_list: list[JsonObjectType] = [
+                cast(JsonObjectType, {"name": name, **details})
+                for name, details in items_map.items()
+            ]
+            items_list.sort(key=lambda item: cast(str, item.get("name", "")).lower())
 
             entry = entry_lookup.get(inventory_id)
             inventory_name = ""
@@ -217,14 +219,14 @@ class InventoryService(BaseServiceHandler):
             else:
                 inventory_name = inventory_id
 
-            inventories_data.append(
-                {
-                    "inventory_id": inventory_id,
-                    "inventory_name": inventory_name,
-                    "description": description,
-                    "items": items_list,
-                }
-            )
+            inventory_payload: JsonObjectType = {
+                "inventory_id": inventory_id,
+                "inventory_name": inventory_name,
+                "description": description,
+                "items": items_list,
+            }
+
+            inventories_data.append(inventory_payload)
 
         inventories_data.sort(key=lambda inv: inv.get("inventory_name", "").lower())
 
