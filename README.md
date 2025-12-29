@@ -50,6 +50,17 @@ The companion frontend card will show you two badges, one for items expiring soo
 
 Each item has an option to add it to a specific to-do list when the quantity remaining reaches a certain amount. The item will be added to the list when below, and removed from the list when incremented above.
 
+### Description
+
+Each item has an optional description, with the ability to append the inventory ID to the end, like:
+
+```yaml
+Milk
+Comes from cows (ABCDEFG123456)
+```
+
+There is a limitation though: the Home Assistant `todo.shopping_list` does not support item descriptions, so this will only work with custom todo lists you have added. See [here](https://github.com/blaineventurine/simple_inventory/issues/19) for why appending the inventory ID is useful.
+
 ### Automations
 
 This integration exposes the following actions:
@@ -81,11 +92,13 @@ Use the `simple_inventory.get_items` service to get the full list of items for a
 You can specify the inventory either by its ID or by its name (case-insensitive). Examples:
 
 By inventory ID:
+
 ```yaml
 inventory_id: "01JYFPCDMBRBRK4MB3C26S2FKH"
 ```
 
 By inventory name:
+
 ```yaml
 inventory_name: "Kitchen Freezer"
 ```
@@ -104,6 +117,8 @@ Example response:
       "expiry_alert_days": 3,
       "auto_add_enabled": true,
       "auto_add_to_list_quantity": 1,
+      "description": "From cows, not almonds",
+      "auto_add_id_to_description_enabled": 1,
       "todo_list": "todo.grocery_list",
       "location": "Fridge"
     }
