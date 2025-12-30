@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from .const import (
@@ -59,20 +60,26 @@ class SimpleInventoryCoordinator:
         FIELD_LOCATION,
     }
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        repository: InventoryRepository,
+    ) -> None:
         """Initialize the coordinator."""
         self.hass = hass
-        self.repository = InventoryRepository(hass)
+        self.entry = entry
+        self.repository = repository
         self._listeners: list[Callable[[], None]] = []
         self._init_lock = asyncio.Lock()
         self._initialized = False
 
     async def async_initialize(self) -> None:
-        """Initialize repository (idempotent)."""
+        """Perform per-entry init (repository already opened)."""
         async with self._init_lock:
             if self._initialized:
                 return
-            await self.repository.async_initialize()
+            _LOGGER.debug("Coordinator ready for %s", self.entry.entry_id)
             self._initialized = True
 
     async def async_save_data(self, inventory_id: str | None = None) -> None:

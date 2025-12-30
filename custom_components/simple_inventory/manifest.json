@@ -13,6 +13,6 @@
   "integration_type": "device",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/blaineventurine/simple_inventory/issues",
-  "requirements": [],
-  "version": "0.4.0"
+  "requirements": ["aiosqlite==0.22.1"],
+  "version": "0.5.0"
 }

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Callable
 
 import homeassistant.helpers.config_validation as cv
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, SupportsResponse
-from homeassistant.helpers import intent as intent_helper
 
 from .const import (
     DOMAIN,
@@ -21,11 +22,8 @@ from .const import (
 )
 from .coordinator import SimpleInventoryCoordinator
 from .intent import (
-    SimpleInventoryAddItemHandler,
-    SimpleInventoryExpiringSoonHandler,
-    SimpleInventoryGetQuantityHandler,
-    SimpleInventoryIncrementItemHandler,
-    SimpleInventoryRemoveItemHandler,
+    async_setup_intents,
+    async_unload_intents,
 )
 from .schemas.service_schemas import (
     ADD_ITEM_SCHEMA,
@@ -36,6 +34,7 @@ from .schemas.service_schemas import (
     UPDATE_ITEM_SCHEMA,
 )
 from .services import ServiceHandler
+from .storage.repository import InventoryRepository
 from .todo_manager import TodoManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -46,82 +45,93 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Simple Inventory from a config entry."""
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    coordinator: SimpleInventoryCoordinator | None = domain_data.get("coordinator")
-    todo_manager: TodoManager | None = domain_data.get("todo_manager")
+    domain_data = hass.data.setdefault(
+        DOMAIN,
+        {
+            "coordinators": {},
+            "services_registered": False,
+            "repository": None,
+            "repository_task": None,
+            "todo_manager": None,
+            "service_handler": None,
+        },
+    )
 
-    if coordinator is None:
-        coordinator = SimpleInventoryCoordinator(hass)
-        await coordinator.async_initialize()
+    repository: InventoryRepository | None = domain_data.get("repository")
+    repo_task: asyncio.Task | None = domain_data.get("repository_task")
 
+    if repository is None:
+        repository = InventoryRepository(hass)
+        domain_data["repository"] = repository
+        repo_task = hass.async_create_task(repository.async_initialize())
+        domain_data["repository_task"] = repo_task
+
+    if repo_task is not None:
+        try:
+            await repo_task
+        finally:
+            if domain_data.get("repository_task") is repo_task and repo_task.done():
+                domain_data["repository_task"] = None
+
+    coordinator = SimpleInventoryCoordinator(hass, entry, repository)
+    await coordinator.async_initialize()
+    domain_data["coordinators"][entry.entry_id] = coordinator
+
+    if not domain_data.get("services_registered"):
         todo_manager = TodoManager(hass)
-        service_handler = ServiceHandler(hass, coordinator, todo_manager)
+        service_handler = ServiceHandler(hass, todo_manager)
 
-        hass.services.async_register(
-            DOMAIN,
+        _register_service(
+            hass,
             SERVICE_UPDATE_ITEM,
             service_handler.async_update_item,
-            schema=UPDATE_ITEM_SCHEMA,
+            UPDATE_ITEM_SCHEMA,
         )
-        hass.services.async_register(
-            DOMAIN,
+        _register_service(
+            hass,
             SERVICE_ADD_ITEM,
             service_handler.async_add_item,
-            schema=ADD_ITEM_SCHEMA,
+            ADD_ITEM_SCHEMA,
         )
-        hass.services.async_register(
-            DOMAIN,
+        _register_service(
+            hass,
             SERVICE_REMOVE_ITEM,
             service_handler.async_remove_item,
-            schema=REMOVE_ITEM_SCHEMA,
+            REMOVE_ITEM_SCHEMA,
         )
-        hass.services.async_register(
-            DOMAIN,
+        _register_service(
+            hass,
             SERVICE_INCREMENT_ITEM,
             service_handler.async_increment_item,
-            schema=QUANTITY_UPDATE_SCHEMA,
+            QUANTITY_UPDATE_SCHEMA,
         )
-        hass.services.async_register(
-            DOMAIN,
+        _register_service(
+            hass,
             SERVICE_DECREMENT_ITEM,
             service_handler.async_decrement_item,
-            schema=QUANTITY_UPDATE_SCHEMA,
+            QUANTITY_UPDATE_SCHEMA,
         )
-        hass.services.async_register(
-            DOMAIN,
+        _register_service(
+            hass,
             SERVICE_GET_ITEMS,
             service_handler.async_get_items,
-            schema=GET_ITEMS_SCHEMA,
-            supports_response=SupportsResponse.ONLY,
+            GET_ITEMS_SCHEMA,
+            SupportsResponse.ONLY,
         )
-        hass.services.async_register(
-            DOMAIN,
+        _register_service(
+            hass,
             SERVICE_GET_ALL_ITEMS,
             service_handler.async_get_items_from_all_inventories,
-            schema=GET_ALL_ITEMS_SCHEMA,
-            supports_response=SupportsResponse.ONLY,
+            GET_ALL_ITEMS_SCHEMA,
+            SupportsResponse.ONLY,
         )
 
-        intent_handlers = [
-            SimpleInventoryGetQuantityHandler(hass),
-            SimpleInventoryAddItemHandler(hass),
-            SimpleInventoryRemoveItemHandler(hass),
-            SimpleInventoryIncrementItemHandler(hass),
-            SimpleInventoryExpiringSoonHandler(hass),
-        ]
-        for handler in intent_handlers:
-            intent_helper.async_register(hass, handler)
-
-        domain_data["intent_handlers"] = intent_handlers
-        domain_data["coordinator"] = coordinator
+        domain_data["services_registered"] = True
         domain_data["todo_manager"] = todo_manager
         domain_data["service_handler"] = service_handler
 
-    else:
-        await coordinator.async_initialize()
-        todo_manager = domain_data["todo_manager"]
+    await async_setup_intents(hass)
 
-    # Persist inventory metadata in the repository
     await coordinator.async_upsert_inventory_metadata(
         inventory_id=entry.entry_id,
         name=entry.data.get("name", entry.title or entry.entry_id),
@@ -132,25 +142,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     domain_data[entry.entry_id] = {
-        "coordinator": coordinator,
-        "todo_manager": todo_manager,
         "config": entry.data,
     }
 
-    if entry.data.get("create_global", False):
-        existing_entries = hass.config_entries.async_entries(DOMAIN)
-        global_exists = any(
-            config_entry.data.get("entry_type") == "global" for config_entry in existing_entries
-        )
-        if not global_exists:
-            await _create_global_entry(hass)
+    if entry.data.get("create_global"):
+        await _ensure_global_entry(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
-async def _create_global_entry(hass: HomeAssistant) -> None:
-    """Create the global config entry."""
+def _register_service(
+    hass: HomeAssistant,
+    name: str,
+    handler: Callable,
+    schema,
+    supports_response: SupportsResponse | None = None,
+) -> None:
+    kwargs: dict[str, SupportsResponse] = {}
+    if supports_response:
+        kwargs["supports_response"] = supports_response
+    hass.services.async_register(DOMAIN, name, handler, schema=schema, **kwargs)
+
+
+async def _ensure_global_entry(hass: HomeAssistant) -> None:
+    """Create the global config entry if none exists."""
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if entry.data.get("entry_type") == "global":
+            return
+
     await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": "internal"},
@@ -173,38 +193,41 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not domain_data:
         return True
 
+    coordinators: dict[str, SimpleInventoryCoordinator] = domain_data.get("coordinators", {})
+    coordinator = coordinators.pop(entry.entry_id, None)
+    if coordinator:
+        await coordinator.async_unload()
+
     domain_data.pop(entry.entry_id, None)
 
-    remaining_entries = [
-        entry_id
-        for entry_id in domain_data
-        if entry_id not in {"coordinator", "todo_manager", "service_handler"}
-    ]
+    if coordinators:
+        return True
 
-    if not remaining_entries:
-        for handler in domain_data.get("intent_handlers", []):
-            intent_helper.async_remove(hass, handler.intent_type)
+    await async_unload_intents(hass)
 
-        for service in (
-            SERVICE_ADD_ITEM,
-            SERVICE_DECREMENT_ITEM,
-            SERVICE_INCREMENT_ITEM,
-            SERVICE_REMOVE_ITEM,
-            SERVICE_UPDATE_ITEM,
-            SERVICE_GET_ITEMS,
-            SERVICE_GET_ALL_ITEMS,
-        ):
-            hass.services.async_remove(DOMAIN, service)
+    if domain_data.get("services_registered"):
+        _remove_service(hass, SERVICE_ADD_ITEM)
+        _remove_service(hass, SERVICE_DECREMENT_ITEM)
+        _remove_service(hass, SERVICE_INCREMENT_ITEM)
+        _remove_service(hass, SERVICE_REMOVE_ITEM)
+        _remove_service(hass, SERVICE_UPDATE_ITEM)
+        _remove_service(hass, SERVICE_GET_ITEMS)
+        _remove_service(hass, SERVICE_GET_ALL_ITEMS)
+        domain_data["services_registered"] = False
 
-        coordinator: SimpleInventoryCoordinator | None = domain_data.get("coordinator")
-        if coordinator:
-            await coordinator.repository.async_close()
+    repository: InventoryRepository | None = domain_data.get("repository")
+    if repository:
+        await repository.async_close()
 
-        hass.data.pop(DOMAIN, None)
-
+    hass.data.pop(DOMAIN, None)
     return True
 
 
+def _remove_service(hass: HomeAssistant, name: str) -> None:
+    if hass.services.has_service(DOMAIN, name):
+        hass.services.async_remove(DOMAIN, name)
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up the component via YAML (legacy support)."""
+    """Legacy YAML setup hook (no-op)."""
     return True

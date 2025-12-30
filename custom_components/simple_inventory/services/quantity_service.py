@@ -5,6 +5,7 @@ from typing import Awaitable, Callable, Literal, cast
 
 from homeassistant.core import HomeAssistant, ServiceCall
 
+from ..const import DOMAIN
 from ..coordinator import SimpleInventoryCoordinator
 from ..todo_manager import TodoManager
 from ..types import InventoryItem
@@ -19,45 +20,88 @@ class QuantityService(BaseServiceHandler):
     def __init__(
         self,
         hass: HomeAssistant,
-        coordinator: SimpleInventoryCoordinator,
         todo_manager: TodoManager,
-    ):
+    ) -> None:
         """Initialize quantity service with todo manager."""
-        super().__init__(hass, coordinator)
+        super().__init__(hass)
         self.todo_manager = todo_manager
+
+    # ------------------------------------------------------------------
+    # Coordinator helpers
+    # ------------------------------------------------------------------
+
+    def _get_coordinator_optional(self, inventory_id: str) -> SimpleInventoryCoordinator | None:
+        domain_data = self.hass.data.get(DOMAIN)
+        if not domain_data:
+            return None
+        coordinators = domain_data.get("coordinators", {})
+        return coordinators.get(inventory_id)
+
+    def _require_coordinator(self, inventory_id: str) -> SimpleInventoryCoordinator | None:
+        coordinator = self._get_coordinator_optional(inventory_id)
+        if coordinator is None:
+            _LOGGER.error(
+                "No coordinator loaded for inventory '%s'; cannot process quantity change",
+                inventory_id,
+            )
+        return coordinator
+
+    # ------------------------------------------------------------------
+    # Core handlers
+    # ------------------------------------------------------------------
 
     async def _handle_quantity_change(
         self,
         call: ServiceCall,
         operation: Literal["increment", "decrement"],
-        coordinator_method: Callable[[str, str, int], Awaitable[bool]],
+        coordinator_method: Callable[
+            [SimpleInventoryCoordinator, str, str, int],
+            Awaitable[bool],
+        ],
         todo_method: Callable[[str, InventoryItem], Awaitable[bool]],
     ) -> None:
         inventory_id, name = self._get_inventory_and_name(call)
         amount = call.data.get("amount", 1)
 
+        coordinator = self._require_coordinator(inventory_id)
+        if coordinator is None:
+            return
+
         try:
-            if await coordinator_method(inventory_id, name, amount):
-                item_data = await self.coordinator.async_get_item(inventory_id, name)
+            if await coordinator_method(coordinator, inventory_id, name, amount):
+                item_data = await coordinator.async_get_item(inventory_id, name)
                 if item_data:
                     await todo_method(name, cast(InventoryItem, item_data))
 
                 await self._save_and_log_success(
-                    inventory_id, f"{operation.capitalize()}ed {name} by {amount}", name
+                    coordinator,
+                    inventory_id,
+                    f"{operation.capitalize()}ed {name} by {amount}",
+                    name,
                 )
             else:
-                self._log_item_not_found(f"{operation.capitalize()} item", name, inventory_id)
+                self._log_item_not_found(
+                    f"{operation.capitalize()} item",
+                    name,
+                    inventory_id,
+                )
 
-        except Exception as e:
+        except Exception as exc:
             _LOGGER.error(
-                "Failed to %s item %s in inventory %s: %s", operation, name, inventory_id, e
+                "Failed to %s item %s in inventory %s: %s",
+                operation,
+                name,
+                inventory_id,
+                exc,
             )
 
     async def async_increment_item(self, call: ServiceCall) -> None:
         await self._handle_quantity_change(
             call,
             "increment",
-            self.coordinator.async_increment_item,
+            lambda coordinator, inv_id, item_name, amt: coordinator.async_increment_item(
+                inv_id, item_name, amt
+            ),
             self.todo_manager.check_and_remove_item,
         )
 
@@ -65,15 +109,14 @@ class QuantityService(BaseServiceHandler):
         await self._handle_quantity_change(
             call,
             "decrement",
-            self.coordinator.async_decrement_item,
+            lambda coordinator, inv_id, item_name, amt: coordinator.async_decrement_item(
+                inv_id, item_name, amt
+            ),
             self.todo_manager.check_and_add_item,
         )
 
     async def async_update_todo_status(self, item_name: str, item_data: InventoryItem) -> None:
-        """Update todo list status based on current quantity.
-
-        This can be called after editing an item to ensure todo list is in sync.
-        """
+        """Update todo list status based on current quantity (manual sync hook)."""
         if not item_data:
             return
 

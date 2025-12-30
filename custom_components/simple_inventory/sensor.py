@@ -26,7 +26,15 @@ async def async_setup_entry(
 ) -> None:
     """Set up sensors based on config entry type."""
     domain_data = hass.data[DOMAIN]
-    coordinator: SimpleInventoryCoordinator = domain_data["coordinator"]
+    coordinators: dict[str, SimpleInventoryCoordinator] = domain_data["coordinators"]
+
+    coordinator = coordinators.get(config_entry.entry_id)
+    if coordinator is None:
+        _LOGGER.error(
+            "No coordinator found for entry %s; skipping sensor setup",
+            config_entry.entry_id,
+        )
+        return
 
     entry_type = config_entry.data.get("entry_type", "inventory")
 

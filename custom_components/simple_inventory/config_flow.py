@@ -114,7 +114,7 @@ class SimpleInventoryConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
-    ) -> OptionsFlowHandler:
+    ) -> "OptionsFlowHandler":
         """Get the options flow for this handler."""
         return OptionsFlowHandler(config_entry)
 
@@ -136,7 +136,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if await self._async_name_exists_excluding_current(cleaned_name):
                 errors["name"] = "name_exists"
             else:
-                new_data = {
+                updated_data = {
+                    **self._config_entry.data,
                     "name": cleaned_name,
                     "icon": user_input.get("icon", DEFAULT_ICON),
                     "description": user_input.get("description", ""),
@@ -144,11 +145,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
                 self.hass.config_entries.async_update_entry(
                     self._config_entry,
-                    data=new_data,
+                    data=updated_data,
                     title=cleaned_name,
                 )
 
-                await self._async_update_repository_metadata(new_data)
+                await self._async_update_repository_metadata(updated_data)
 
                 self.hass.bus.async_fire(
                     f"{DOMAIN}_updated_{self._config_entry.entry_id}",
@@ -191,16 +192,32 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     async def _async_update_repository_metadata(self, data: dict[str, Any]) -> None:
         """Mirror option changes into the SQLite repository."""
-        domain_data = self.hass.data.get(DOMAIN, {})
-        coordinator = domain_data.get("coordinator")
-        if coordinator is None:
+        domain_data = self.hass.data.get(DOMAIN)
+        if not domain_data:
             return
 
-        await coordinator.async_upsert_inventory_metadata(
-            inventory_id=self._config_entry.entry_id,
-            name=data.get("name", self._config_entry.title or self._config_entry.entry_id),
-            description=data.get("description", ""),
-            icon=data.get("icon", DEFAULT_ICON),
-            entry_type=self._config_entry.data.get("entry_type", "inventory"),
-            metadata=None,
+        coordinator = (
+            domain_data.get("coordinators", {}).get(self._config_entry.entry_id)
+            if "coordinators" in domain_data
+            else None
         )
+        repository = domain_data.get("repository")
+
+        if coordinator:
+            await coordinator.async_upsert_inventory_metadata(
+                inventory_id=self._config_entry.entry_id,
+                name=data.get("name", self._config_entry.title or self._config_entry.entry_id),
+                description=data.get("description", ""),
+                icon=data.get("icon", DEFAULT_ICON),
+                entry_type=data.get("entry_type", "inventory"),
+                metadata=None,
+            )
+        elif repository:
+            await repository.upsert_inventory(
+                inventory_id=self._config_entry.entry_id,
+                name=data.get("name", self._config_entry.title or self._config_entry.entry_id),
+                description=data.get("description", ""),
+                icon=data.get("icon", DEFAULT_ICON),
+                entry_type=data.get("entry_type", "inventory"),
+                metadata=None,
+            )

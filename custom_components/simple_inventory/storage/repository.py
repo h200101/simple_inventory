@@ -42,6 +42,8 @@ LEGACY_MIGRATION_FLAG = "legacy_migrated"
 class InventoryRepository:
     """SQLite-backed storage for Simple Inventory."""
 
+    _migration_lock: asyncio.Lock = asyncio.Lock()
+
     def __init__(self, hass: HomeAssistant, db_filename: str = "simple_inventory.db") -> None:
         self._hass = hass
         self._db_path = Path(hass.config.path(db_filename))
@@ -53,27 +55,42 @@ class InventoryRepository:
         async with self._lock:
             if self._conn is None:
                 self._conn = await aiosqlite.connect(self._db_path)
+                _LOGGER.debug("Opened Simple Inventory database at %s", self._db_path)
                 await self._conn.execute("PRAGMA foreign_keys = ON")
-                await self._ensure_schema()
-                await self._maybe_migrate_legacy_store()
+                await self._conn.execute("PRAGMA journal_mode = WAL")
+                await self._conn.execute("PRAGMA synchronous = NORMAL")
+                await self._conn.execute("PRAGMA busy_timeout = 5000")
+
+        await self._ensure_schema()
+        await self._maybe_migrate_legacy_store()
 
     async def _maybe_migrate_legacy_store(self) -> None:
+        async with InventoryRepository._migration_lock:
+            await self._maybe_migrate_legacy_store_locked()
+
+    async def _maybe_migrate_legacy_store_locked(self) -> None:
         """Load legacy JSON storage and persist into SQLite once."""
         assert self._conn is not None
 
-        # Skip if migration already recorded
         cursor = await self._conn.execute(
             "SELECT value FROM metadata WHERE key = ?", (LEGACY_MIGRATION_FLAG,)
         )
         row = await cursor.fetchone()
         await cursor.close()
+
         if row is not None and row[0] == "1":
             return
 
+        await self._conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+            (LEGACY_MIGRATION_FLAG, "running"),
+        )
+        await self._conn.commit()
+
         store = Store[dict[str, Any]](self._hass, STORAGE_VERSION, STORAGE_KEY)
         legacy_data = await store.async_load()
+
         if not legacy_data:
-            # Nothing to migrate, just mark flag and continue
             await self._conn.execute(
                 "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
                 (LEGACY_MIGRATION_FLAG, "1"),
@@ -85,7 +102,6 @@ class InventoryRepository:
         for inventory_id, inventory_payload in inventories.items():
             await self._migrate_inventory(inventory_id, inventory_payload)
 
-        # Record migration completion
         await self._conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
             (LEGACY_MIGRATION_FLAG, "1"),
@@ -112,31 +128,31 @@ class InventoryRepository:
         legacy_item: dict[str, Any],
         inventory_payload: dict[str, Any],
     ) -> None:
-        """Migrate a single item entry."""
+        """Migrate a single item entry, merging with existing rows if needed."""
         item_payload: dict[str, Any] = {
             FIELD_NAME: legacy_item.get(FIELD_NAME, legacy_name),
             FIELD_DESCRIPTION: legacy_item.get(FIELD_DESCRIPTION, ""),
-            FIELD_QUANTITY: legacy_item.get(FIELD_QUANTITY, 0),
+            FIELD_QUANTITY: int(legacy_item.get(FIELD_QUANTITY, 0)),
             FIELD_UNIT: legacy_item.get(FIELD_UNIT, ""),
             FIELD_EXPIRY_DATE: legacy_item.get(FIELD_EXPIRY_DATE, ""),
-            FIELD_EXPIRY_ALERT_DAYS: legacy_item.get(FIELD_EXPIRY_ALERT_DAYS, 0),
+            FIELD_EXPIRY_ALERT_DAYS: int(legacy_item.get(FIELD_EXPIRY_ALERT_DAYS, 0)),
             FIELD_AUTO_ADD_ENABLED: legacy_item.get(FIELD_AUTO_ADD_ENABLED, False),
             FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED: legacy_item.get(
                 FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED, False
             ),
-            FIELD_AUTO_ADD_TO_LIST_QUANTITY: legacy_item.get(FIELD_AUTO_ADD_TO_LIST_QUANTITY, 0),
+            FIELD_AUTO_ADD_TO_LIST_QUANTITY: int(
+                legacy_item.get(FIELD_AUTO_ADD_TO_LIST_QUANTITY, 0)
+            ),
             FIELD_TODO_LIST: legacy_item.get(FIELD_TODO_LIST, ""),
         }
 
         item_id = await self.create_item(inventory_id, item_payload)
 
-        # Locations: legacy data stores a single location string
         location_name = legacy_item.get(FIELD_LOCATION, "")
         if location_name:
             location_id = await self.ensure_location(inventory_id, location_name)
             await self.set_item_locations(item_id, [(location_id, item_payload[FIELD_QUANTITY])])
 
-        # Categories: legacy data stores a single category string
         category_name = legacy_item.get(FIELD_CATEGORY, "")
         if category_name:
             category_id = await self.ensure_category(category_name)
@@ -151,98 +167,98 @@ class InventoryRepository:
 
     async def _ensure_schema(self) -> None:
         """Create tables and metadata if needed."""
-        assert self._conn is not None
+        async with self._lock:
+            assert self._conn is not None
 
-        await self._conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS metadata (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
+            await self._conn.executescript(
+                """
+                DROP INDEX IF EXISTS idx_items_name_inventory;
+                DROP INDEX IF EXISTS idx_locations_unique_name;
 
-            CREATE TABLE IF NOT EXISTS inventories (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT DEFAULT '',
-                icon TEXT DEFAULT '',
-                entry_type TEXT DEFAULT '',
-                metadata TEXT DEFAULT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
+                CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
 
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_inventories_name
-                ON inventories (LOWER(name));
+                CREATE TABLE IF NOT EXISTS inventories (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    icon TEXT DEFAULT '',
+                    entry_type TEXT DEFAULT '',
+                    metadata TEXT DEFAULT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
 
-            CREATE TABLE IF NOT EXISTS items (
-                id TEXT PRIMARY KEY,
-                inventory_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                description TEXT DEFAULT '',
-                quantity INTEGER NOT NULL DEFAULT 0,
-                unit TEXT DEFAULT '',
-                expiry_date TEXT DEFAULT '',
-                expiry_alert_days INTEGER DEFAULT 0,
-                auto_add_enabled INTEGER NOT NULL DEFAULT 0,
-                auto_add_id_to_description_enabled INTEGER NOT NULL DEFAULT 0,
-                auto_add_to_list_quantity INTEGER NOT NULL DEFAULT 0,
-                todo_list TEXT DEFAULT '',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (inventory_id) REFERENCES inventories(id) ON DELETE CASCADE
-            );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_inventories_name
+                    ON inventories (LOWER(name));
 
-            CREATE INDEX IF NOT EXISTS idx_items_inventory_id
-                ON items (inventory_id);
+                CREATE TABLE IF NOT EXISTS items (
+                    id TEXT PRIMARY KEY,
+                    inventory_id TEXT NOT NULL,
+                    name TEXT NOT NULL COLLATE NOCASE,
+                    description TEXT DEFAULT '',
+                    quantity INTEGER NOT NULL DEFAULT 0,
+                    unit TEXT DEFAULT '',
+                    expiry_date TEXT DEFAULT '',
+                    expiry_alert_days INTEGER DEFAULT 0,
+                    auto_add_enabled INTEGER NOT NULL DEFAULT 0,
+                    auto_add_id_to_description_enabled INTEGER NOT NULL DEFAULT 0,
+                    auto_add_to_list_quantity INTEGER NOT NULL DEFAULT 0,
+                    todo_list TEXT DEFAULT '',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (inventory_id) REFERENCES inventories(id) ON DELETE CASCADE,
+                    UNIQUE (inventory_id, name)
+                );
 
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_items_name_inventory
-                ON items (inventory_id, LOWER(name));
+                CREATE INDEX IF NOT EXISTS idx_items_inventory_id
+                    ON items (inventory_id);
 
-            CREATE TABLE IF NOT EXISTS locations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                inventory_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                description TEXT DEFAULT '',
-                color TEXT DEFAULT '',
-                sort_order INTEGER DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (inventory_id) REFERENCES inventories(id) ON DELETE CASCADE
-            );
+                CREATE TABLE IF NOT EXISTS locations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    inventory_id TEXT NOT NULL,
+                    name TEXT NOT NULL COLLATE NOCASE,
+                    description TEXT DEFAULT '',
+                    color TEXT DEFAULT '',
+                    sort_order INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (inventory_id) REFERENCES inventories(id) ON DELETE CASCADE,
+                    UNIQUE (inventory_id, name)
+                );
 
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_locations_unique_name
-                ON locations (inventory_id, LOWER(name));
+                CREATE TABLE IF NOT EXISTS item_locations (
+                    item_id TEXT NOT NULL,
+                    location_id INTEGER NOT NULL,
+                    quantity INTEGER NOT NULL DEFAULT 0,
+                    notes TEXT DEFAULT '',
+                    PRIMARY KEY (item_id, location_id),
+                    FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
+                    FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE
+                );
 
-            CREATE TABLE IF NOT EXISTS item_locations (
-                item_id TEXT NOT NULL,
-                location_id INTEGER NOT NULL,
-                quantity INTEGER NOT NULL DEFAULT 0,
-                notes TEXT DEFAULT '',
-                PRIMARY KEY (item_id, location_id),
-                FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
-                FOREIGN KEY (location_id) REFERENCES locations(id) ON DELETE CASCADE
-            );
+                CREATE TABLE IF NOT EXISTS categories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL COLLATE NOCASE
+                );
 
-            CREATE TABLE IF NOT EXISTS categories (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL
-            );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_name
+                    ON categories (name);
 
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_name
-                ON categories (LOWER(name));
+                CREATE TABLE IF NOT EXISTS item_categories (
+                    item_id TEXT NOT NULL,
+                    category_id INTEGER NOT NULL,
+                    PRIMARY KEY (item_id, category_id),
+                    FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
+                    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+                );
+                """
+            )
 
-            CREATE TABLE IF NOT EXISTS item_categories (
-                item_id TEXT NOT NULL,
-                category_id INTEGER NOT NULL,
-                PRIMARY KEY (item_id, category_id),
-                FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
-                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
-            );
-            """
-        )
-
-        await self._ensure_schema_version()
-        await self._conn.commit()
+            await self._ensure_schema_version()
+            await self._conn.commit()
 
     async def _ensure_schema_version(self) -> None:
         """Store or validate the schema version entry."""
@@ -253,10 +269,22 @@ class InventoryRepository:
 
         if row is None:
             await self._conn.execute(
-                "INSERT INTO metadata (key, value) VALUES (?, ?)",
+                """
+                INSERT OR IGNORE INTO metadata (key, value)
+                VALUES (?, ?)
+                """,
                 ("schema_version", str(SCHEMA_VERSION)),
             )
-        elif int(row[0]) != SCHEMA_VERSION:
+            cursor = await self._conn.execute(
+                "SELECT value FROM metadata WHERE key = 'schema_version'"
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+
+        if row is None:
+            raise RuntimeError("Unable to initialize schema_version metadata")
+
+        if int(row[0]) != SCHEMA_VERSION:
             raise RuntimeError(
                 f"Database schema version {row[0]} does not match expected {SCHEMA_VERSION}"
             )
@@ -267,7 +295,6 @@ class InventoryRepository:
             raise RuntimeError("InventoryRepository not initialized")
         return self._conn
 
-    # Placeholder CRUD examples; will flesh out in subsequent steps.
     async def fetch_inventory(self, inventory_id: str) -> dict[str, Any] | None:
         conn = self._connection()
         cursor = await conn.execute(
@@ -351,7 +378,7 @@ class InventoryRepository:
         ]
 
     async def create_item(self, inventory_id: str, data: dict[str, Any]) -> str:
-        """Insert a new item; returns generated item_id."""
+        """Insert or merge an item; returns item_id."""
         item_id = data.get("id") or str(uuid.uuid4())
         payload = {
             FIELD_NAME: data[FIELD_NAME],
@@ -370,7 +397,7 @@ class InventoryRepository:
 
         conn = self._connection()
         async with self._lock:
-            await conn.execute(
+            cursor = await conn.execute(
                 """
                 INSERT INTO items (
                     id, inventory_id, name, description, quantity, unit,
@@ -379,6 +406,30 @@ class InventoryRepository:
                     auto_add_to_list_quantity, todo_list
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(inventory_id, name) DO UPDATE SET
+                    quantity = items.quantity + excluded.quantity,
+                    description = CASE
+                        WHEN excluded.description != '' THEN excluded.description
+                        ELSE items.description
+                    END,
+                    unit = CASE
+                        WHEN excluded.unit != '' THEN excluded.unit
+                        ELSE items.unit
+                    END,
+                    expiry_date = CASE
+                        WHEN excluded.expiry_date != '' THEN excluded.expiry_date
+                        ELSE items.expiry_date
+                    END,
+                    expiry_alert_days = excluded.expiry_alert_days,
+                    auto_add_enabled = excluded.auto_add_enabled,
+                    auto_add_id_to_description_enabled = excluded.auto_add_id_to_description_enabled,
+                    auto_add_to_list_quantity = excluded.auto_add_to_list_quantity,
+                    todo_list = CASE
+                        WHEN excluded.todo_list != '' THEN excluded.todo_list
+                        ELSE items.todo_list
+                    END,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING id
                 """,
                 (
                     item_id,
@@ -395,9 +446,11 @@ class InventoryRepository:
                     payload[FIELD_TODO_LIST],
                 ),
             )
+            row = await cursor.fetchone()
+            await cursor.close()
             await conn.commit()
 
-        return item_id
+        return cast(str, row[0]) if row else item_id
 
     async def update_item(self, item_id: str, data: dict[str, Any]) -> bool:
         """Update an item record; returns True if a row was updated."""
@@ -506,7 +559,6 @@ class InventoryRepository:
         if not items:
             return []
 
-        # Locations
         cursor = await conn.execute(
             """
             SELECT il.item_id, l.name, il.quantity
@@ -517,16 +569,16 @@ class InventoryRepository:
             """,
             (inventory_id,),
         )
-        for item_id, location_name, quantity in await cursor.fetchall():
+        location_rows = await cursor.fetchall()
+        await cursor.close()
+        for item_id, location_name, quantity in location_rows:
             if item_id not in items:
                 continue
             location_entry = {"name": location_name, "quantity": quantity}
             items[item_id]["locations"].append(location_entry)
             if not items[item_id][FIELD_LOCATION]:
                 items[item_id][FIELD_LOCATION] = location_name
-        await cursor.close()
 
-        # Categories
         cursor = await conn.execute(
             """
             SELECT ic.item_id, c.name
@@ -537,13 +589,14 @@ class InventoryRepository:
             """,
             (inventory_id,),
         )
-        for item_id, category_name in await cursor.fetchall():
+        category_rows = await cursor.fetchall()
+        await cursor.close()
+        for item_id, category_name in category_rows:
             if item_id not in items:
                 continue
             items[item_id]["categories"].append(category_name)
             if not items[item_id][FIELD_CATEGORY]:
                 items[item_id][FIELD_CATEGORY] = category_name
-        await cursor.close()
 
         return list(items.values())
 
@@ -558,7 +611,7 @@ class InventoryRepository:
                    todo_list, created_at, updated_at
             FROM items
             WHERE inventory_id = ?
-              AND LOWER(name) = LOWER(?)
+              AND name = ?
             """,
             (inventory_id, name),
         )
@@ -590,25 +643,18 @@ class InventoryRepository:
         async with self._lock:
             cursor = await conn.execute(
                 """
-                SELECT id FROM locations
-                WHERE inventory_id = ? AND LOWER(name) = LOWER(?)
+                INSERT INTO locations (inventory_id, name)
+                VALUES (?, ?)
+                ON CONFLICT(inventory_id, name) DO UPDATE SET
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING id
                 """,
                 (inventory_id, name),
             )
             row = await cursor.fetchone()
-            if row:
-                await cursor.close()
-                return cast(int, row[0])
-
-            cursor = await conn.execute(
-                """
-                INSERT INTO locations (inventory_id, name)
-                VALUES (?, ?)
-                """,
-                (inventory_id, name),
-            )
+            await cursor.close()
             await conn.commit()
-            return cast(int, cursor.lastrowid)
+            return cast(int, row[0])
 
     async def set_item_locations(
         self,
@@ -619,13 +665,14 @@ class InventoryRepository:
         conn = self._connection()
         async with self._lock:
             await conn.execute("DELETE FROM item_locations WHERE item_id = ?", (item_id,))
-            await conn.executemany(
-                """
-                INSERT INTO item_locations (item_id, location_id, quantity)
-                VALUES (?, ?, ?)
-                """,
-                [(item_id, loc_id, qty) for loc_id, qty in locations],
-            )
+            if locations:
+                await conn.executemany(
+                    """
+                    INSERT INTO item_locations (item_id, location_id, quantity)
+                    VALUES (?, ?, ?)
+                    """,
+                    [(item_id, loc_id, qty) for loc_id, qty in locations],
+                )
             await conn.commit()
 
     async def ensure_category(self, name: str) -> int:
@@ -633,30 +680,30 @@ class InventoryRepository:
         conn = self._connection()
         async with self._lock:
             cursor = await conn.execute(
-                "SELECT id FROM categories WHERE LOWER(name) = LOWER(?)",
+                """
+                INSERT INTO categories (name)
+                VALUES (?)
+                ON CONFLICT(name) DO UPDATE SET
+                    name = excluded.name
+                RETURNING id
+                """,
                 (name,),
             )
             row = await cursor.fetchone()
-            if row:
-                await cursor.close()
-                return cast(int, row[0])
-
-            cursor = await conn.execute(
-                "INSERT INTO categories (name) VALUES (?)",
-                (name,),
-            )
+            await cursor.close()
             await conn.commit()
-            return cast(int, cursor.lastrowid)
+            return cast(int, row[0])
 
     async def set_item_categories(self, item_id: str, category_ids: Sequence[int]) -> None:
         """Replace category associations for an item."""
         conn = self._connection()
         async with self._lock:
             await conn.execute("DELETE FROM item_categories WHERE item_id = ?", (item_id,))
-            await conn.executemany(
-                "INSERT INTO item_categories (item_id, category_id) VALUES (?, ?)",
-                [(item_id, category_id) for category_id in category_ids],
-            )
+            if category_ids:
+                await conn.executemany(
+                    "INSERT INTO item_categories (item_id, category_id) VALUES (?, ?)",
+                    [(item_id, category_id) for category_id in category_ids],
+                )
             await conn.commit()
 
     async def compute_inventory_stats(self, inventory_id: str) -> dict[str, Any]:

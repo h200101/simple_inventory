@@ -16,6 +16,7 @@ INTENT_ADD_ITEM = "SimpleInventoryAddItem"
 INTENT_REMOVE_ITEM = "SimpleInventoryRemoveItem"
 INTENT_INCREMENT_ITEM = "SimpleInventoryIncrementItem"
 INTENT_EXPIRING_SOON = "SimpleInventoryExpiringSoon"
+INTENT_HANDLERS: list[intent.IntentHandler] = []
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -265,3 +266,30 @@ class SimpleInventoryExpiringSoonHandler(_BaseInventoryIntentHandler):
         response.async_set_speech(f"{len(items)} items expiring soon. Next up: {summary}.")
 
         return response
+
+
+async def async_setup_intents(hass: HomeAssistant) -> None:
+    """Register Simple Inventory intents with Home Assistant."""
+    if INTENT_HANDLERS:
+        return  # already registered in this runtime
+
+    handlers: list[intent.IntentHandler] = [
+        SimpleInventoryGetQuantityHandler(hass),
+        SimpleInventoryAddItemHandler(hass),
+        SimpleInventoryRemoveItemHandler(hass),
+        SimpleInventoryIncrementItemHandler(hass),
+        SimpleInventoryExpiringSoonHandler(hass),
+    ]
+
+    for handler in handlers:
+        intent.async_register(hass, handler)
+
+    INTENT_HANDLERS.extend(handlers)
+
+
+async def async_unload_intents(hass: HomeAssistant) -> None:
+    """Remove registered intents (call when the integration fully unloads)."""
+    global INTENT_HANDLERS
+    for handler in INTENT_HANDLERS:
+        intent.async_remove(hass, handler.intent_type)
+    INTENT_HANDLERS = []

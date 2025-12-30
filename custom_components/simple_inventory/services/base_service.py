@@ -5,6 +5,7 @@ from typing import Any, cast
 
 from homeassistant.core import HomeAssistant, ServiceCall
 
+from ..const import DOMAIN
 from ..coordinator import SimpleInventoryCoordinator
 from ..types import (
     AddItemServiceData,
@@ -18,16 +19,43 @@ _LOGGER = logging.getLogger(__name__)
 class BaseServiceHandler:
     """Base class for service handlers with common functionality."""
 
-    def __init__(self, hass: HomeAssistant, coordinator: SimpleInventoryCoordinator) -> None:
+    def __init__(self, hass: HomeAssistant) -> None:
         """Initialize the base service handler."""
         self.hass = hass
-        self.coordinator = coordinator
+
+    # ------------------------------------------------------------------
+    # Coordinator helpers
+    # ------------------------------------------------------------------
+
+    def _get_coordinator_optional(self, inventory_id: str) -> SimpleInventoryCoordinator | None:
+        domain_data = self.hass.data.get(DOMAIN)
+        if not domain_data:
+            return None
+        coordinators = domain_data.get("coordinators", {})
+        return coordinators.get(inventory_id)
+
+    def _require_coordinator(self, inventory_id: str) -> SimpleInventoryCoordinator | None:
+        coordinator = self._get_coordinator_optional(inventory_id)
+        if coordinator is None:
+            _LOGGER.error(
+                "No coordinator loaded for inventory '%s'; cannot process service call",
+                inventory_id,
+            )
+        return coordinator
+
+    # ------------------------------------------------------------------
+    # Common logging / persistence helpers
+    # ------------------------------------------------------------------
 
     async def _save_and_log_success(
-        self, inventory_id: str, operation: str, item_name: str
+        self,
+        coordinator: SimpleInventoryCoordinator,
+        inventory_id: str,
+        operation: str,
+        item_name: str,
     ) -> None:
         """Save data and log successful operation."""
-        await self.coordinator.async_save_data(inventory_id)
+        await coordinator.async_save_data(inventory_id)
         _LOGGER.debug("%s: %s in inventory: %s", operation, item_name, inventory_id)
 
     def _log_item_not_found(self, operation: str, item_name: str, inventory_id: str) -> None:
@@ -47,6 +75,10 @@ class BaseServiceHandler:
             item_name,
             inventory_id,
         )
+
+    # ------------------------------------------------------------------
+    # Misc helpers
+    # ------------------------------------------------------------------
 
     def _extract_item_kwargs(
         self,
