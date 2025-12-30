@@ -1,0 +1,40 @@
+{
+  "intents": {
+    "SimpleInventoryAddItem": {
+      "examples": [
+        "Add {quantity} {item_name} to [the] {inventory_name} inventory",
+        "Add {item_name} to my inventory",
+        "Add {item_name} to {inventory_name}"
+      ]
+    },
+    "SimpleInventoryExpiringSoon": {
+      "examples": [
+        "What items are expiring soon",
+        "What’s expiring in {inventory_name}",
+        "Any items expiring soon in [the] {inventory_name} inventory"
+      ]
+    },
+    "SimpleInventoryGetQuantity": {
+      "examples": [
+        "How many {item_name} are in [the] {inventory_name} inventory",
+        "How many {item_name} do I have",
+        "What’s the quantity of {item_name} [in|inside] {inventory_name}"
+      ]
+    },
+    "SimpleInventoryIncrementItem": {
+      "examples": [
+        "Increase {item_name} by {amount} in {inventory_name}",
+        "Add {amount} more {item_name}",
+        "Bump {item_name} by {amount} in [the] {inventory_name} inventory"
+      ]
+    },
+    "SimpleInventoryRemoveItem": {
+      "examples": [
+        "Remove {item_name} from [the] {inventory_name} inventory",
+        "Delete {item_name} from my inventory",
+        "Remove {item_name} from {inventory_name}"
+      ]
+    }
+  },
+  "language": "en"
+}

@@ -7,6 +7,7 @@ import logging
 import homeassistant.helpers.config_validation as cv
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, SupportsResponse
+from homeassistant.helpers import intent as intent_helper
 
 from .const import (
     DOMAIN,
@@ -19,6 +20,13 @@ from .const import (
     SERVICE_UPDATE_ITEM,
 )
 from .coordinator import SimpleInventoryCoordinator
+from .intent import (
+    SimpleInventoryAddItemHandler,
+    SimpleInventoryExpiringSoonHandler,
+    SimpleInventoryGetQuantityHandler,
+    SimpleInventoryIncrementItemHandler,
+    SimpleInventoryRemoveItemHandler,
+)
 from .schemas.service_schemas import (
     ADD_ITEM_SCHEMA,
     GET_ALL_ITEMS_SCHEMA,
@@ -94,6 +102,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             supports_response=SupportsResponse.ONLY,
         )
 
+        intent_handlers = [
+            SimpleInventoryGetQuantityHandler(hass),
+            SimpleInventoryAddItemHandler(hass),
+            SimpleInventoryRemoveItemHandler(hass),
+            SimpleInventoryIncrementItemHandler(hass),
+            SimpleInventoryExpiringSoonHandler(hass),
+        ]
+        for handler in intent_handlers:
+            intent_helper.async_register(hass, handler)
+
+        domain_data["intent_handlers"] = intent_handlers
         domain_data["coordinator"] = coordinator
         domain_data["todo_manager"] = todo_manager
         domain_data["service_handler"] = service_handler
@@ -163,6 +182,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ]
 
     if not remaining_entries:
+        for handler in domain_data.get("intent_handlers", []):
+            intent_helper.async_remove(hass, handler.intent_type)
+
         for service in (
             SERVICE_ADD_ITEM,
             SERVICE_DECREMENT_ITEM,
