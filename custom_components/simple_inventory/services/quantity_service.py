@@ -1,15 +1,18 @@
 """Quantity management service handler."""
 
+from __future__ import annotations
+
 import logging
-from typing import Awaitable, Callable, Literal, cast
+from collections.abc import Awaitable, Callable
+from typing import Literal, cast
 
 from homeassistant.core import HomeAssistant, ServiceCall
 
-from ..const import DOMAIN
 from ..coordinator import SimpleInventoryCoordinator
 from ..todo_manager import TodoManager
 from ..types import InventoryItem
 from .base_service import BaseServiceHandler
+from .domain_data import get_coordinators
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,11 +34,7 @@ class QuantityService(BaseServiceHandler):
     # ------------------------------------------------------------------
 
     def _get_coordinator_optional(self, inventory_id: str) -> SimpleInventoryCoordinator | None:
-        domain_data = self.hass.data.get(DOMAIN)
-        if not domain_data:
-            return None
-        coordinators = domain_data.get("coordinators", {})
-        return coordinators.get(inventory_id)
+        return get_coordinators(self.hass).get(inventory_id)
 
     def _require_coordinator(self, inventory_id: str) -> SimpleInventoryCoordinator | None:
         coordinator = self._get_coordinator_optional(inventory_id)
@@ -54,14 +53,11 @@ class QuantityService(BaseServiceHandler):
         self,
         call: ServiceCall,
         operation: Literal["increment", "decrement"],
-        coordinator_method: Callable[
-            [SimpleInventoryCoordinator, str, str, int],
-            Awaitable[bool],
-        ],
+        coordinator_method: Callable[[SimpleInventoryCoordinator, str, str, int], Awaitable[bool]],
         todo_method: Callable[[str, InventoryItem], Awaitable[bool]],
     ) -> None:
         inventory_id, name = self._get_inventory_and_name(call)
-        amount = call.data.get("amount", 1)
+        amount = int(call.data.get("amount", 1))
 
         coordinator = self._require_coordinator(inventory_id)
         if coordinator is None:
@@ -117,9 +113,6 @@ class QuantityService(BaseServiceHandler):
 
     async def async_update_todo_status(self, item_name: str, item_data: InventoryItem) -> None:
         """Update todo list status based on current quantity (manual sync hook)."""
-        if not item_data:
-            return
-
         quantity = item_data.get("quantity", 0)
         auto_add_quantity = item_data.get("auto_add_to_list_quantity", 0)
 

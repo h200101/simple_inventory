@@ -374,6 +374,15 @@ class SimpleInventoryCoordinator:
         for listener in list(self._listeners):
             listener()
 
+    async def async_unload(self) -> None:
+        """Unload per-entry resources (listeners, tasks).
+
+        Repository is shared and is closed by __init__.py when the last entry unloads.
+        """
+        async with self._init_lock:
+            self._listeners.clear()
+            self._initialized = False
+
     # Internal helpers -----------------------------------------------------
 
     async def _adjust_quantity(self, inventory_id: str, name: str, delta: int) -> bool:

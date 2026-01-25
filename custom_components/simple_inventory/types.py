@@ -1,4 +1,12 @@
-from typing import Any, NotRequired, TypedDict
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
+
+if TYPE_CHECKING:
+    from .coordinator import SimpleInventoryCoordinator
+    from .services import ServiceHandler
+    from .storage.repository import InventoryRepository
+    from .todo_manager import TodoManager
 
 
 class AddItemServiceData(TypedDict):
@@ -83,3 +91,12 @@ class InventoryData(TypedDict):
 
     inventories: dict[str, dict[str, Any]]
     config: NotRequired[dict[str, Any]]  # Optional field
+
+
+class SimpleInventoryDomainData(TypedDict):
+    coordinators: dict[str, "SimpleInventoryCoordinator"]
+    repository: "InventoryRepository"
+    repository_task: NotRequired[object]
+    service_handler: NotRequired["ServiceHandler"]
+    services_registered: bool
+    todo_manager: NotRequired["TodoManager"]

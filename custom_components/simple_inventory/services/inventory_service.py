@@ -1,5 +1,7 @@
 """Inventory management service handler."""
 
+from __future__ import annotations
+
 import logging
 from typing import Any, cast
 
@@ -8,6 +10,7 @@ from homeassistant.util.json import JsonObjectType, JsonValueType
 
 from ..const import DOMAIN
 from ..coordinator import SimpleInventoryCoordinator
+from ..storage.repository import InventoryRepository
 from ..todo_manager import TodoManager
 from ..types import (
     AddItemServiceData,
@@ -18,6 +21,7 @@ from ..types import (
     UpdateItemServiceData,
 )
 from .base_service import BaseServiceHandler
+from .domain_data import get_coordinators, get_repository
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,19 +51,14 @@ class InventoryService(BaseServiceHandler):
         """Initialize inventory service with optional todo manager."""
         super().__init__(hass)
         self.todo_manager = todo_manager
-        domain_data = hass.data.setdefault(DOMAIN, {})
-        self._repository = domain_data.get("repository")
+        self._repository: InventoryRepository | None = get_repository(hass)
 
     # ---------------------------------------------------------------------
     # Internal helpers
     # ---------------------------------------------------------------------
 
     def _get_coordinator_optional(self, inventory_id: str) -> SimpleInventoryCoordinator | None:
-        domain_data = self.hass.data.get(DOMAIN)
-        if not domain_data:
-            return None
-        coordinators = domain_data.get("coordinators", {})
-        return coordinators.get(inventory_id)
+        return get_coordinators(self.hass).get(inventory_id)
 
     def _require_coordinator(self, inventory_id: str) -> SimpleInventoryCoordinator | None:
         coordinator = self._get_coordinator_optional(inventory_id)
@@ -90,14 +89,14 @@ class InventoryService(BaseServiceHandler):
         return update_data
 
     # ---------------------------------------------------------------------
-    # Service handlers
+    # Service handlers (write operations)
     # ---------------------------------------------------------------------
 
     async def async_add_item(self, call: ServiceCall) -> None:
-        """Add an item to the inventory."""
-        item_data: AddItemServiceData = cast(AddItemServiceData, call.data)
+        item_data = cast(AddItemServiceData, call.data)
         inventory_id = item_data["inventory_id"]
         name = item_data["name"]
+
         coordinator = self._require_coordinator(inventory_id)
         if coordinator is None:
             return
@@ -125,10 +124,10 @@ class InventoryService(BaseServiceHandler):
             )
 
     async def async_remove_item(self, call: ServiceCall) -> None:
-        """Remove an item from the inventory."""
-        data: RemoveItemServiceData = cast(RemoveItemServiceData, call.data)
+        data = cast(RemoveItemServiceData, call.data)
         inventory_id = data["inventory_id"]
         name = data["name"]
+
         coordinator = self._require_coordinator(inventory_id)
         if coordinator is None:
             return
@@ -153,11 +152,11 @@ class InventoryService(BaseServiceHandler):
             )
 
     async def async_update_item(self, call: ServiceCall) -> None:
-        """Update an existing item with new values."""
-        data: UpdateItemServiceData = cast(UpdateItemServiceData, call.data)
+        data = cast(UpdateItemServiceData, call.data)
         inventory_id = data["inventory_id"]
         old_name = data["old_name"]
         new_name = data["name"]
+
         coordinator = self._require_coordinator(inventory_id)
         if coordinator is None:
             return
@@ -199,19 +198,22 @@ class InventoryService(BaseServiceHandler):
                 exc,
             )
 
+    # ---------------------------------------------------------------------
+    # Query helpers
+    # ---------------------------------------------------------------------
+
     async def async_get_items(self, call: ServiceCall) -> JsonObjectType:
         """Return full list of items for an inventory."""
         data = cast(GetItemsServiceData, call.data)
 
-        if "inventory_id" in data and data["inventory_id"]:
+        if data.get("inventory_id"):
             inventory_id = data["inventory_id"]
-        elif "inventory_name" in data and data["inventory_name"]:
+        elif data.get("inventory_name"):
             inventory_name = data["inventory_name"]
-            all_entries = self.hass.config_entries.async_entries(DOMAIN)
             matching_entry = next(
                 (
                     entry
-                    for entry in all_entries
+                    for entry in self.hass.config_entries.async_entries(DOMAIN)
                     if entry.data.get("name", "").lower() == inventory_name.lower()
                 ),
                 None,
@@ -236,20 +238,23 @@ class InventoryService(BaseServiceHandler):
         """Return full list of items grouped by inventory."""
         _ = cast(GetAllItemsServiceData, call.data)
 
-        if self._repository is None:
+        repo = get_repository(self.hass)
+        if repo is None:
             return cast(JsonObjectType, {"inventories": []})
 
         inventories_data: list[JsonObjectType] = []
-        inventories = await self._repository.list_inventories()
+        inventories = await repo.list_inventories()
+
+        coordinators = get_coordinators(self.hass)
 
         for inventory in inventories:
-            inventory_id = inventory["id"]
-            coordinator = self._get_coordinator_optional(inventory_id)
+            inventory_id = cast(str, inventory["id"])
+            coordinator = coordinators.get(inventory_id)
 
             if coordinator:
                 items_list = await coordinator.async_list_items(inventory_id)
             else:
-                items_list = await self._repository.list_items_with_details(inventory_id)
+                items_list = await repo.list_items_with_details(inventory_id)
 
             items_list.sort(key=lambda item: cast(str, item.get("name", "")).lower())
 

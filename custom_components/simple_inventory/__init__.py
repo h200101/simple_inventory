@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 import homeassistant.helpers.config_validation as cv
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, SupportsResponse
+from homeassistant.core import HomeAssistant, ServiceCall
 
 from .const import (
     DOMAIN,
@@ -21,10 +22,6 @@ from .const import (
     SERVICE_UPDATE_ITEM,
 )
 from .coordinator import SimpleInventoryCoordinator
-from .intent import (
-    async_setup_intents,
-    async_unload_intents,
-)
 from .schemas.service_schemas import (
     ADD_ITEM_SCHEMA,
     GET_ALL_ITEMS_SCHEMA,
@@ -116,21 +113,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             SERVICE_GET_ITEMS,
             service_handler.async_get_items,
             GET_ITEMS_SCHEMA,
-            SupportsResponse.ONLY,
         )
         _register_service(
             hass,
             SERVICE_GET_ALL_ITEMS,
             service_handler.async_get_items_from_all_inventories,
             GET_ALL_ITEMS_SCHEMA,
-            SupportsResponse.ONLY,
         )
 
         domain_data["services_registered"] = True
         domain_data["todo_manager"] = todo_manager
         domain_data["service_handler"] = service_handler
-
-    await async_setup_intents(hass)
 
     await coordinator.async_upsert_inventory_metadata(
         inventory_id=entry.entry_id,
@@ -155,14 +148,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 def _register_service(
     hass: HomeAssistant,
     name: str,
-    handler: Callable,
-    schema,
-    supports_response: SupportsResponse | None = None,
+    handler: Callable[[ServiceCall], Coroutine[Any, Any, None]],
+    schema: Any,
 ) -> None:
-    kwargs: dict[str, SupportsResponse] = {}
-    if supports_response:
-        kwargs["supports_response"] = supports_response
-    hass.services.async_register(DOMAIN, name, handler, schema=schema, **kwargs)
+    hass.services.async_register(DOMAIN, name, handler, schema=schema)
 
 
 async def _ensure_global_entry(hass: HomeAssistant) -> None:
@@ -202,8 +191,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if coordinators:
         return True
-
-    await async_unload_intents(hass)
 
     if domain_data.get("services_registered"):
         _remove_service(hass, SERVICE_ADD_ITEM)

@@ -5,13 +5,13 @@ from typing import Any, cast
 
 from homeassistant.core import HomeAssistant, ServiceCall
 
-from ..const import DOMAIN
 from ..coordinator import SimpleInventoryCoordinator
 from ..types import (
     AddItemServiceData,
     RemoveItemServiceData,
     UpdateItemServiceData,
 )
+from .domain_data import get_coordinators
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,11 +28,7 @@ class BaseServiceHandler:
     # ------------------------------------------------------------------
 
     def _get_coordinator_optional(self, inventory_id: str) -> SimpleInventoryCoordinator | None:
-        domain_data = self.hass.data.get(DOMAIN)
-        if not domain_data:
-            return None
-        coordinators = domain_data.get("coordinators", {})
-        return coordinators.get(inventory_id)
+        return get_coordinators(self.hass).get(inventory_id)
 
     def _require_coordinator(self, inventory_id: str) -> SimpleInventoryCoordinator | None:
         coordinator = self._get_coordinator_optional(inventory_id)

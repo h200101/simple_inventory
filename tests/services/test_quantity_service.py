@@ -1,275 +1,297 @@
 """Tests for QuantityService."""
 
+from __future__ import annotations
+
+import asyncio
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.core import HomeAssistant, ServiceCall
-from typing_extensions import Self
 
-from custom_components.simple_inventory.services.quantity_service import (
-    QuantityService,
-)
+from custom_components.simple_inventory.const import DOMAIN
+from custom_components.simple_inventory.services.base_service import BaseServiceHandler
+from custom_components.simple_inventory.services.quantity_service import QuantityService
 
 
-class TestQuantityService:
-    """Test QuantityService class."""
+@pytest.fixture
+def mock_todo_manager() -> MagicMock:
+    todo = MagicMock()
+    todo.check_and_add_item = AsyncMock()
+    todo.check_and_remove_item = AsyncMock()
+    return todo
 
-    def test_init(
-        self: Self,
-        hass: HomeAssistant,
-        mock_coordinator: MagicMock,
-        mock_todo_manager: MagicMock,
-    ) -> None:
-        """Test QuantityService initialization."""
-        from custom_components.simple_inventory.services.quantity_service import (
-            QuantityService,
-        )
 
-        service = QuantityService(hass, mock_coordinator, mock_todo_manager)
+@pytest.fixture
+def mock_coordinator() -> MagicMock:
+    coordinator = MagicMock()
+    coordinator.async_increment_item = AsyncMock(return_value=True)
+    coordinator.async_decrement_item = AsyncMock(return_value=True)
+    coordinator.async_get_item = AsyncMock(
+        return_value={"quantity": 5, "auto_add_to_list_quantity": 2}
+    )
+    coordinator.async_save_data = AsyncMock()
+    return coordinator
 
-        assert service.hass is hass
-        assert service.coordinator is mock_coordinator
-        assert service.todo_manager is mock_todo_manager
 
-    def test_inheritance(self: Self, quantity_service: QuantityService) -> None:
-        """Test that QuantityService properly inherits from BaseServiceHandler."""
-        from custom_components.simple_inventory.services.base_service import (
-            BaseServiceHandler,
-        )
+@pytest.fixture
+def hass_with_coordinator(hass: HomeAssistant, mock_coordinator: MagicMock) -> HomeAssistant:
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN]["coordinators"] = {"kitchen": mock_coordinator}
+    return hass
 
-        assert isinstance(quantity_service, BaseServiceHandler)
-        assert hasattr(quantity_service, "_save_and_log_success")
-        assert hasattr(quantity_service, "_get_inventory_and_name")
-        assert hasattr(quantity_service, "_log_item_not_found")
 
-    @pytest.mark.asyncio
-    async def test_async_increment_item_success(
-        self: Self,
-        quantity_service: QuantityService,
-        quantity_service_call: ServiceCall,
-        mock_coordinator: MagicMock,
-    ) -> None:
-        """Test successful item increment."""
+@pytest.fixture
+def quantity_service(
+    hass_with_coordinator: HomeAssistant, mock_todo_manager: MagicMock
+) -> QuantityService:
+    return QuantityService(hass_with_coordinator, mock_todo_manager)
+
+
+@pytest.fixture
+def quantity_service_call() -> ServiceCall:
+    call = MagicMock(spec=ServiceCall)
+    call.data = {"inventory_id": "kitchen", "name": "milk", "amount": 2}
+    call.context.id = "ctx-1"
+    return call
+
+
+@pytest.fixture
+def basic_service_call() -> ServiceCall:
+    call = MagicMock(spec=ServiceCall)
+    call.data = {"inventory_id": "kitchen", "name": "milk"}  # no amount -> default 1
+    call.context.id = "ctx-2"
+    return call
+
+
+def test_init(hass_with_coordinator: HomeAssistant, mock_todo_manager: MagicMock) -> None:
+    service = QuantityService(hass_with_coordinator, mock_todo_manager)
+    assert service.hass is hass_with_coordinator
+    assert service.todo_manager is mock_todo_manager
+
+
+def test_inheritance(quantity_service: QuantityService) -> None:
+    assert isinstance(quantity_service, BaseServiceHandler)
+    assert hasattr(quantity_service, "_save_and_log_success")
+    assert hasattr(quantity_service, "_get_inventory_and_name")
+    assert hasattr(quantity_service, "_log_item_not_found")
+
+
+@pytest.mark.asyncio
+async def test_async_increment_item_success(
+    quantity_service: QuantityService,
+    quantity_service_call: ServiceCall,
+    mock_coordinator: MagicMock,
+    mock_todo_manager: MagicMock,
+) -> None:
+    await quantity_service.async_increment_item(quantity_service_call)
+
+    mock_coordinator.async_increment_item.assert_awaited_once_with("kitchen", "milk", 2)
+    mock_coordinator.async_get_item.assert_awaited_once_with("kitchen", "milk")
+    mock_todo_manager.check_and_remove_item.assert_awaited_once_with(
+        "milk", {"quantity": 5, "auto_add_to_list_quantity": 2}
+    )
+    mock_coordinator.async_save_data.assert_awaited_once_with("kitchen")
+
+
+@pytest.mark.asyncio
+async def test_async_increment_item_default_amount(
+    quantity_service: QuantityService,
+    basic_service_call: ServiceCall,
+    mock_coordinator: MagicMock,
+) -> None:
+    await quantity_service.async_increment_item(basic_service_call)
+
+    mock_coordinator.async_increment_item.assert_awaited_once_with("kitchen", "milk", 1)
+    mock_coordinator.async_save_data.assert_awaited_once_with("kitchen")
+
+
+@pytest.mark.asyncio
+async def test_async_increment_item_not_found_logs_warning(
+    quantity_service: QuantityService,
+    quantity_service_call: ServiceCall,
+    mock_coordinator: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mock_coordinator.async_increment_item.return_value = False
+
+    with caplog.at_level(logging.WARNING):
         await quantity_service.async_increment_item(quantity_service_call)
 
-        mock_coordinator.increment_item.assert_called_once_with("kitchen", "milk", 2)
-        mock_coordinator.async_save_data.assert_called_once_with("kitchen")
+    mock_coordinator.async_increment_item.assert_awaited_once_with("kitchen", "milk", 2)
+    mock_coordinator.async_save_data.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_async_increment_item_default_amount(
-        self: Self,
-        quantity_service: QuantityService,
-        basic_service_call: ServiceCall,
-        mock_coordinator: MagicMock,
-    ) -> None:
-        """Test increment with default amount (1)."""
-        await quantity_service.async_increment_item(basic_service_call)
+    assert "Item not found" in caplog.text
 
-        mock_coordinator.increment_item.assert_called_once_with("kitchen", "milk", 1)
-        mock_coordinator.async_save_data.assert_called_once_with("kitchen")
 
-    @pytest.mark.asyncio
-    async def test_async_increment_item_not_found(
-        self: Self,
-        quantity_service: QuantityService,
-        quantity_service_call: ServiceCall,
-        mock_coordinator: MagicMock,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Test incrementing item that doesn't exist."""
-        mock_coordinator.increment_item.return_value = False
+@pytest.mark.asyncio
+async def test_async_increment_item_coordinator_exception_logged(
+    quantity_service: QuantityService,
+    quantity_service_call: ServiceCall,
+    mock_coordinator: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mock_coordinator.async_increment_item.side_effect = Exception("Database error")
 
-        with caplog.at_level(logging.WARNING):
-            await quantity_service.async_increment_item(quantity_service_call)
+    with caplog.at_level(logging.ERROR):
+        await quantity_service.async_increment_item(quantity_service_call)
 
-        mock_coordinator.increment_item.assert_called_once_with("kitchen", "milk", 2)
-        mock_coordinator.async_save_data.assert_not_called()
+    assert "Failed to increment item" in caplog.text
+    mock_coordinator.async_save_data.assert_not_awaited()
 
-        assert "Increment item failed - Item not found: milk in inventory: kitchen" in caplog.text
 
-    @pytest.mark.asyncio
-    async def test_async_increment_item_coordinator_exception(
-        self: Self,
-        quantity_service: QuantityService,
-        quantity_service_call: ServiceCall,
-        mock_coordinator: MagicMock,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Test handling coordinator exception during increment."""
-        mock_coordinator.increment_item.side_effect = Exception("Database error")
+@pytest.mark.asyncio
+async def test_async_decrement_item_success_with_todo_check(
+    quantity_service: QuantityService,
+    quantity_service_call: ServiceCall,
+    mock_coordinator: MagicMock,
+    mock_todo_manager: MagicMock,
+) -> None:
+    await quantity_service.async_decrement_item(quantity_service_call)
 
-        with caplog.at_level(logging.ERROR):
-            await quantity_service.async_increment_item(quantity_service_call)
+    mock_coordinator.async_decrement_item.assert_awaited_once_with("kitchen", "milk", 2)
+    mock_coordinator.async_get_item.assert_awaited_once_with("kitchen", "milk")
+    mock_todo_manager.check_and_add_item.assert_awaited_once_with(
+        "milk", {"quantity": 5, "auto_add_to_list_quantity": 2}
+    )
+    mock_coordinator.async_save_data.assert_awaited_once_with("kitchen")
 
-        assert "Failed to increment item milk in inventory kitchen: Database error" in caplog.text
-        mock_coordinator.async_save_data.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_async_decrement_item_success_with_todo_check(
-        self: Self,
-        quantity_service: QuantityService,
-        quantity_service_call: ServiceCall,
-        mock_coordinator: MagicMock,
-        mock_todo_manager: MagicMock,
-    ) -> None:
-        """Test successful item decrement with todo list check."""
+@pytest.mark.asyncio
+async def test_async_decrement_item_default_amount(
+    quantity_service: QuantityService,
+    basic_service_call: ServiceCall,
+    mock_coordinator: MagicMock,
+) -> None:
+    await quantity_service.async_decrement_item(basic_service_call)
+
+    mock_coordinator.async_decrement_item.assert_awaited_once_with("kitchen", "milk", 1)
+    mock_coordinator.async_save_data.assert_awaited_once_with("kitchen")
+
+
+@pytest.mark.asyncio
+async def test_async_decrement_item_no_item_data(
+    quantity_service: QuantityService,
+    quantity_service_call: ServiceCall,
+    mock_coordinator: MagicMock,
+    mock_todo_manager: MagicMock,
+) -> None:
+    mock_coordinator.async_get_item.return_value = None
+
+    await quantity_service.async_decrement_item(quantity_service_call)
+
+    mock_coordinator.async_decrement_item.assert_awaited_once()
+    mock_coordinator.async_get_item.assert_awaited_once()
+    mock_todo_manager.check_and_add_item.assert_not_awaited()
+    mock_coordinator.async_save_data.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_async_decrement_item_not_found_logs_warning(
+    quantity_service: QuantityService,
+    quantity_service_call: ServiceCall,
+    mock_coordinator: MagicMock,
+    mock_todo_manager: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mock_coordinator.async_decrement_item.return_value = False
+
+    with caplog.at_level(logging.WARNING):
         await quantity_service.async_decrement_item(quantity_service_call)
 
-        mock_coordinator.decrement_item.assert_called_once_with("kitchen", "milk", 2)
-        mock_coordinator.get_item.assert_called_once_with("kitchen", "milk")
-        expected_item_data = {"quantity": 5, "auto_add_to_list_quantity": 2}
-        mock_todo_manager.check_and_add_item.assert_called_once_with("milk", expected_item_data)
-        mock_coordinator.async_save_data.assert_called_once_with("kitchen")
+    mock_coordinator.async_decrement_item.assert_awaited_once_with("kitchen", "milk", 2)
 
-    @pytest.mark.asyncio
-    async def test_async_decrement_item_default_amount(
-        self: Self,
-        quantity_service: QuantityService,
-        basic_service_call: ServiceCall,
-        mock_coordinator: MagicMock,
-        mock_todo_manager: MagicMock,
-    ) -> None:
-        """Test decrement with default amount (1)."""
-        await quantity_service.async_decrement_item(basic_service_call)
+    mock_coordinator.async_get_item.assert_not_awaited()
+    mock_todo_manager.check_and_add_item.assert_not_awaited()
+    mock_coordinator.async_save_data.assert_not_awaited()
 
-        mock_coordinator.decrement_item.assert_called_once_with("kitchen", "milk", 1)
-        mock_coordinator.get_item.assert_called_once_with("kitchen", "milk")
-        mock_todo_manager.check_and_add_item.assert_called_once()
+    assert "Item not found" in caplog.text
 
-    @pytest.mark.asyncio
-    async def test_async_decrement_item_no_item_data(
-        self: Self,
-        quantity_service: QuantityService,
-        quantity_service_call: ServiceCall,
-        mock_coordinator: MagicMock,
-        mock_todo_manager: MagicMock,
-    ) -> None:
-        """Test decrement when get_item returns None."""
-        mock_coordinator.get_item.return_value = None
 
+@pytest.mark.asyncio
+async def test_async_decrement_item_coordinator_exception_logged(
+    quantity_service: QuantityService,
+    quantity_service_call: ServiceCall,
+    mock_coordinator: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mock_coordinator.async_decrement_item.side_effect = Exception("Decrement failed")
+
+    with caplog.at_level(logging.ERROR):
         await quantity_service.async_decrement_item(quantity_service_call)
 
-        mock_coordinator.decrement_item.assert_called_once()
-        mock_coordinator.get_item.assert_called_once()
-        mock_todo_manager.check_and_add_item.assert_not_called()
-        mock_coordinator.async_save_data.assert_called_once()
+    assert "Failed to decrement item" in caplog.text
+    mock_coordinator.async_save_data.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_async_decrement_item_not_found(
-        self: Self,
-        quantity_service: QuantityService,
-        quantity_service_call: ServiceCall,
-        mock_coordinator: MagicMock,
-        mock_todo_manager: MagicMock,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Test decrementing item that doesn't exist."""
-        mock_coordinator.decrement_item.return_value = False
 
-        with caplog.at_level(logging.WARNING):
-            await quantity_service.async_decrement_item(quantity_service_call)
+@pytest.mark.asyncio
+async def test_async_decrement_item_todo_manager_exception_logged(
+    quantity_service: QuantityService,
+    quantity_service_call: ServiceCall,
+    mock_coordinator: MagicMock,
+    mock_todo_manager: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mock_todo_manager.check_and_add_item.side_effect = Exception("Todo check failed")
 
-        mock_coordinator.decrement_item.assert_called_once_with("kitchen", "milk", 2)
+    with caplog.at_level(logging.ERROR):
+        await quantity_service.async_decrement_item(quantity_service_call)
 
-        mock_coordinator.get_item.assert_not_called()
-        mock_todo_manager.check_and_add_item.assert_not_called()
-        mock_coordinator.async_save_data.assert_not_called()
+    # decrement happened, but save should not
+    mock_coordinator.async_decrement_item.assert_awaited_once()
+    mock_coordinator.async_save_data.assert_not_awaited()
+    assert "Failed to decrement item" in caplog.text
 
-        assert "Decrement item failed - Item not found: milk in inventory: kitchen" in caplog.text
 
-    @pytest.mark.asyncio
-    async def test_async_decrement_item_coordinator_exception(
-        self: Self,
-        quantity_service: QuantityService,
-        quantity_service_call: ServiceCall,
-        mock_coordinator: MagicMock,
-        mock_todo_manager: MagicMock,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Test handling coordinator exception during decrement."""
-        mock_coordinator.decrement_item.side_effect = Exception("Decrement failed")
+@pytest.mark.parametrize("amount", [1, 5, 10, 100, 0])
+@pytest.mark.asyncio
+async def test_increment_various_amounts(
+    quantity_service: QuantityService,
+    mock_coordinator: MagicMock,
+    amount: int,
+) -> None:
+    call = MagicMock(spec=ServiceCall)
+    call.data = {"inventory_id": "kitchen", "name": "milk", "amount": amount}
+    call.context.id = "ctx-x"
 
-        with caplog.at_level(logging.ERROR):
-            await quantity_service.async_decrement_item(quantity_service_call)
+    await quantity_service.async_increment_item(call)
 
-        assert "Failed to decrement item milk in inventory kitchen: Decrement failed" in caplog.text
+    mock_coordinator.async_increment_item.assert_awaited_once_with("kitchen", "milk", amount)
 
-        mock_todo_manager.check_and_add_item.assert_not_called()
-        mock_coordinator.async_save_data.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_async_decrement_item_todo_manager_exception(
-        self: Self,
-        quantity_service: QuantityService,
-        quantity_service_call: ServiceCall,
-        mock_coordinator: MagicMock,
-        mock_todo_manager: MagicMock,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Test handling todo manager exception during decrement."""
-        mock_todo_manager.check_and_add_item.side_effect = Exception("Todo check failed")
+@pytest.mark.asyncio
+async def test_concurrent_decrement_operations(
+    hass: HomeAssistant,
+    mock_todo_manager: MagicMock,
+) -> None:
+    # Build a hass with coordinators for 3 inventories
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN]["coordinators"] = {}
 
-        # The exception should be caught and logged, not propagated
-        with caplog.at_level(logging.ERROR):
-            await quantity_service.async_decrement_item(quantity_service_call)
+    coordinators: dict[str, MagicMock] = {}
+    for i in range(3):
+        inv_id = f"inventory_{i}"
+        c = MagicMock()
+        c.async_decrement_item = AsyncMock(return_value=True)
+        c.async_get_item = AsyncMock(return_value={"quantity": 1, "auto_add_to_list_quantity": 2})
+        c.async_save_data = AsyncMock()
+        coordinators[inv_id] = c
+        hass.data[DOMAIN]["coordinators"][inv_id] = c
 
-        mock_coordinator.decrement_item.assert_called_once()
-        mock_coordinator.get_item.assert_called_once()
+    service = QuantityService(hass, mock_todo_manager)
 
-        assert (
-            "Failed to decrement item milk in inventory kitchen: Todo check failed" in caplog.text
-        )
+    calls = []
+    for i in range(3):
+        call = MagicMock(spec=ServiceCall)
+        call.data = {"inventory_id": f"inventory_{i}", "name": f"item_{i}", "amount": i + 1}
+        call.context.id = f"ctx-{i}"
+        calls.append(call)
 
-        mock_coordinator.async_save_data.assert_not_called()
+    await asyncio.gather(*(service.async_decrement_item(call) for call in calls))
 
-    @pytest.mark.parametrize("amount", [1, 5, 10, 100, 0])
-    @pytest.mark.asyncio
-    async def test_increment_various_amounts(
-        self: Self,
-        quantity_service: QuantityService,
-        mock_coordinator: MagicMock,
-        amount: int,
-    ) -> None:
-        """Test increment with various amount values."""
-        from unittest.mock import MagicMock
+    for i in range(3):
+        inv_id = f"inventory_{i}"
+        coordinators[inv_id].async_decrement_item.assert_awaited_once()
+        coordinators[inv_id].async_save_data.assert_awaited_once_with(inv_id)
 
-        call = MagicMock()
-        call.data = {
-            "inventory_id": "kitchen",
-            "name": "milk",
-            "amount": amount,
-        }
-
-        await quantity_service.async_increment_item(call)
-
-        mock_coordinator.increment_item.assert_called_once_with("kitchen", "milk", amount)
-
-    @pytest.mark.asyncio
-    async def test_concurrent_decrement_operations(
-        self: Self,
-        quantity_service: QuantityService,
-        mock_coordinator: MagicMock,
-        mock_todo_manager: MagicMock,
-    ) -> None:
-        """Test concurrent decrement operations."""
-        import asyncio
-        from unittest.mock import MagicMock
-
-        calls = []
-        for i in range(3):
-            call = MagicMock()
-            call.data = {
-                "inventory_id": f"inventory_{i}",
-                "name": f"item_{i}",
-                "amount": i + 1,
-            }
-            calls.append(call)
-
-        tasks = [quantity_service.async_decrement_item(call) for call in calls]
-        await asyncio.gather(*tasks)
-
-        assert mock_coordinator.decrement_item.call_count == 3
-        assert mock_coordinator.get_item.call_count == 3
-        assert mock_todo_manager.check_and_add_item.call_count == 3
-        assert mock_coordinator.async_save_data.call_count == 3
+    assert mock_todo_manager.check_and_add_item.await_count == 3

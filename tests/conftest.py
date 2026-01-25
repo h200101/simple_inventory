@@ -11,9 +11,7 @@ import pytest
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, ServiceCall
 
-from custom_components.simple_inventory.coordinator import (
-    SimpleInventoryCoordinator,
-)
+from custom_components.simple_inventory.const import DOMAIN
 from custom_components.simple_inventory.services import ServiceHandler
 from custom_components.simple_inventory.services.base_service import (
     BaseServiceHandler,
@@ -32,9 +30,16 @@ sys.path.insert(0, str(project_root))
 
 
 @pytest.fixture
-def hass() -> HomeAssistant:
+def hass_mock() -> MagicMock:
     """Create a mock Home Assistant instance."""
     hass_mock = MagicMock()
+    hass_mock.data = {
+        "simple_inventory": {
+            "coordinators": {},
+            "repository": MagicMock(),
+        }
+    }
+
     hass_mock.services = MagicMock()
     hass_mock.services.async_call = AsyncMock()
     hass_mock.states = MagicMock()
@@ -61,26 +66,35 @@ def hass() -> HomeAssistant:
 
 
 @pytest.fixture
-def mock_coordinator() -> SimpleInventoryCoordinator:
-    """Create a mock coordinator with common methods."""
+def mock_coordinator() -> MagicMock:
+    """Create a mock coordinator with common async methods."""
     coordinator = MagicMock()
     coordinator.async_save_data = AsyncMock()
 
-    # Inventory operations
-    coordinator.add_item = MagicMock()
-    coordinator.remove_item = MagicMock(return_value=True)
-    coordinator.update_item = MagicMock(return_value=True)
-    coordinator.get_item = MagicMock(return_value={"quantity": 5, "auto_add_to_list_quantity": 2})
-    coordinator.get_all_items = MagicMock(return_value={})
+    coordinator.async_add_item = AsyncMock(return_value="item-id")
+    coordinator.async_remove_item = AsyncMock(return_value=True)
+    coordinator.async_update_item = AsyncMock(return_value=True)
+    coordinator.async_get_item = AsyncMock(
+        return_value={"quantity": 5, "auto_add_to_list_quantity": 2}
+    )
+    coordinator.async_list_items = AsyncMock(return_value=[])
 
-    # Quantity operations
-    coordinator.increment_item = MagicMock(return_value=True)
-    coordinator.decrement_item = MagicMock(return_value=True)
+    coordinator.async_increment_item = AsyncMock(return_value=True)
+    coordinator.async_decrement_item = AsyncMock(return_value=True)
 
-    # Data access
-    coordinator.get_data = MagicMock(return_value={"inventories": {}})
-    coordinator.last_update_success = True
-    coordinator.last_update_time = datetime.now()
+    coordinator.async_get_inventory_statistics = AsyncMock(
+        return_value={
+            "total_quantity": 0,
+            "total_items": 0,
+            "categories": {},
+            "locations": {},
+            "below_threshold": [],
+            "expiring_items": [],
+        }
+    )
+    coordinator.async_get_items_expiring_soon = AsyncMock(return_value=[])
+
+    coordinator.async_add_listener = MagicMock(return_value=lambda: None)
 
     return coordinator
 
@@ -102,30 +116,33 @@ def todo_manager(hass: HomeAssistant) -> TodoManager:
 
 @pytest.fixture
 def base_service_handler(
-    hass: HomeAssistant, mock_coordinator: SimpleInventoryCoordinator
+    hass: HomeAssistant,
 ) -> BaseServiceHandler:
     """Create a BaseServiceHandler instance."""
-    return BaseServiceHandler(hass, mock_coordinator)
+    return BaseServiceHandler(hass)
 
 
 @pytest.fixture
 def inventory_service(
     hass: HomeAssistant,
-    mock_coordinator: SimpleInventoryCoordinator,
     mock_todo_manager: TodoManager,
+    mock_coordinator: MagicMock,
 ) -> InventoryService:
-    """Create an InventoryService instance."""
-    return InventoryService(hass, mock_coordinator, mock_todo_manager)
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN].setdefault("coordinators", {})
+    hass.data[DOMAIN]["coordinators"]["kitchen"] = mock_coordinator
+    hass.data[DOMAIN].setdefault("repository", MagicMock())
+    return InventoryService(hass, mock_todo_manager)
 
 
 @pytest.fixture
 def quantity_service(
     hass: HomeAssistant,
-    mock_coordinator: SimpleInventoryCoordinator,
     mock_todo_manager: TodoManager,
+    mock_coordinator: MagicMock,
 ) -> QuantityService:
-    """Create a QuantityService instance."""
-    return QuantityService(hass, mock_coordinator, mock_todo_manager)
+    hass.data["simple_inventory"]["coordinators"]["kitchen"] = mock_coordinator
+    return QuantityService(hass, mock_todo_manager)
 
 
 @pytest.fixture
@@ -213,14 +230,18 @@ def sample_item_data() -> InventoryItem:
 
 @pytest.fixture
 def sample_inventory_data() -> dict[str, Any]:
-    """Sample inventory data for testing."""
+    """Sample inventory data for testing (list-of-items shape)."""
     today = datetime.now().date()
+
     return {
         "kitchen": {
-            "items": {
-                "milk": {
+            "items": [
+                {
+                    "inventory_id": "kitchen_123",
+                    "name": "milk",
                     "auto_add_enabled": True,
                     "auto_add_to_list_quantity": 1,
+                    "auto_add_id_to_description_enabled": False,
                     "category": "dairy",
                     "location": "fridge",
                     "expiry_alert_days": 7,
@@ -228,21 +249,33 @@ def sample_inventory_data() -> dict[str, Any]:
                     "quantity": 2,
                     "todo_list": "todo.shopping",
                     "unit": "liters",
+                    "description": "",
+                    "locations": [],
+                    "categories": [],
                 },
-                "bread": {
+                {
+                    "inventory_id": "kitchen_123",
+                    "name": "bread",
                     "auto_add_enabled": False,
-                    "auto_add_to_list_quantity": None,
+                    "auto_add_to_list_quantity": 0,
+                    "auto_add_id_to_description_enabled": False,
                     "category": "bakery",
                     "location": "pantry",
-                    "expiry_alert_days": None,
+                    "expiry_alert_days": 0,
                     "expiry_date": (today + timedelta(days=2)).strftime("%Y-%m-%d"),
                     "quantity": 1,
                     "todo_list": "",
                     "unit": "loaf",
+                    "description": "",
+                    "locations": [],
+                    "categories": [],
                 },
-                "expired_yogurt": {
+                {
+                    "inventory_id": "kitchen_123",
+                    "name": "expired_yogurt",
                     "auto_add_enabled": False,
-                    "auto_add_to_list_quantity": None,
+                    "auto_add_to_list_quantity": 0,
+                    "auto_add_id_to_description_enabled": False,
                     "category": "dairy",
                     "location": "fridge",
                     "expiry_alert_days": 7,
@@ -250,23 +283,32 @@ def sample_inventory_data() -> dict[str, Any]:
                     "quantity": 1,
                     "todo_list": "",
                     "unit": "cup",
+                    "description": "",
+                    "locations": [],
+                    "categories": [],
                 },
-            }
+            ]
         },
         "pantry": {
-            "items": {
-                "rice": {
+            "items": [
+                {
+                    "inventory_id": "pantry_123",
+                    "name": "rice",
                     "auto_add_enabled": False,
-                    "auto_add_to_list_quantity": None,
+                    "auto_add_to_list_quantity": 0,
+                    "auto_add_id_to_description_enabled": False,
                     "category": "grains",
                     "location": "pantry",
-                    "expiry_alert_days": None,
+                    "expiry_alert_days": 0,
                     "expiry_date": (today + timedelta(days=365)).strftime("%Y-%m-%d"),
                     "quantity": 5,
                     "todo_list": "",
                     "unit": "kg",
+                    "description": "",
+                    "locations": [],
+                    "categories": [],
                 }
-            }
+            ]
         },
     }
 
@@ -287,66 +329,6 @@ def mock_config_entries(
 ) -> list[config_entries.ConfigEntry]:
     """Create a list of mock config entries."""
     return [mock_config_entry]
-
-
-@pytest.fixture
-def mock_sensor_coordinator(sample_inventory_data: dict[str, Any]) -> MagicMock:
-    """Create a mock coordinator specifically for sensor testing."""
-    coordinator = MagicMock()
-    coordinator.get_data.return_value = {"inventories": sample_inventory_data}
-    coordinator.get_all_items.return_value = sample_inventory_data.get("kitchen", {}).get(
-        "items", {}
-    )
-    coordinator.last_update_success = True
-    coordinator.last_update_time = datetime.now()
-    coordinator.get_inventory_statistics = MagicMock(
-        return_value={
-            "total_quantity": 0,
-            "total_items": 0,
-            "categories": [],
-            "below_threshold": [],
-            "expiring_items": [],
-        }
-    )
-
-    def mock_get_items_expiring_soon(
-        inventory_id: str | None = None,
-    ) -> list[dict[Any, Any]]:
-        """Mock implementation of get_items_expiring_soon."""
-        today = datetime.now().date()
-        items = []
-
-        inventories_to_check = {}
-        if inventory_id:
-            inventories_to_check = {inventory_id: sample_inventory_data.get(inventory_id, {})}
-        else:
-            inventories_to_check = sample_inventory_data
-
-        for inv_id, inventory in inventories_to_check.items():
-            for item_name, item_data in inventory.get("items", {}).items():
-                expiry_date_str = item_data.get("expiry_date", "")
-                if expiry_date_str:
-                    expiry_date = datetime.strptime(expiry_date_str, "%Y-%m-%d").date()
-                    days_until_expiry = (expiry_date - today).days
-                    item_threshold = item_data.get("expiry_alert_days", 7)
-
-                    if item_threshold and days_until_expiry <= item_threshold:
-                        items.append(
-                            {
-                                "inventory_id": inv_id,
-                                "name": item_name,
-                                "expiry_date": expiry_date_str,
-                                "days_until_expiry": days_until_expiry,
-                                "threshold": item_threshold,
-                                **item_data,
-                            }
-                        )
-        return items
-
-    coordinator.get_items_expiring_soon = MagicMock(side_effect=mock_get_items_expiring_soon)
-    coordinator.async_add_listener = MagicMock(return_value=MagicMock())
-
-    return coordinator
 
 
 # Utility fixtures
@@ -386,15 +368,14 @@ def full_service_setup(
     mock_coordinator: MagicMock,
     mock_todo_manager: TodoManager,
 ) -> dict[str, Any]:
-    """Create a complete service setup for integration testing."""
+    hass.data["simple_inventory"]["coordinators"]["kitchen"] = mock_coordinator
 
     return {
         "hass": hass,
-        "coordinator": mock_coordinator,
         "todo_manager": mock_todo_manager,
-        "service_handler": ServiceHandler(hass, mock_coordinator, mock_todo_manager),
-        "inventory_service": InventoryService(hass, mock_coordinator, mock_todo_manager),
-        "quantity_service": QuantityService(hass, mock_coordinator, mock_todo_manager),
+        "service_handler": ServiceHandler(hass, mock_todo_manager),
+        "inventory_service": InventoryService(hass, mock_todo_manager),
+        "quantity_service": QuantityService(hass, mock_todo_manager),
     }
 
 

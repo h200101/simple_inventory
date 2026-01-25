@@ -55,6 +55,7 @@ class InventoryRepository:
         async with self._lock:
             if self._conn is None:
                 self._conn = await aiosqlite.connect(self._db_path)
+                self._conn.row_factory = aiosqlite.Row
                 _LOGGER.debug("Opened Simple Inventory database at %s", self._db_path)
                 await self._conn.execute("PRAGMA foreign_keys = ON")
                 await self._conn.execute("PRAGMA journal_mode = WAL")
@@ -654,7 +655,10 @@ class InventoryRepository:
             row = await cursor.fetchone()
             await cursor.close()
             await conn.commit()
-            return cast(int, row[0])
+        if row is None:
+            raise RuntimeError("Failed to ensure location; no row returned")
+
+        return cast(int, row["id"])
 
     async def set_item_locations(
         self,
@@ -692,7 +696,10 @@ class InventoryRepository:
             row = await cursor.fetchone()
             await cursor.close()
             await conn.commit()
-            return cast(int, row[0])
+        if row is None:
+            raise RuntimeError("Failed to ensure location; no row returned")
+
+        return cast(int, row["id"])
 
     async def set_item_categories(self, item_id: str, category_ids: Sequence[int]) -> None:
         """Replace category associations for an item."""

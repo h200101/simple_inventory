@@ -3,8 +3,8 @@
 import logging
 
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.util.json import JsonObjectType
 
+from ..const import DOMAIN
 from ..todo_manager import TodoManager
 from .inventory_service import InventoryService
 from .quantity_service import QuantityService
@@ -46,13 +46,29 @@ class ServiceHandler:
         """Decrement item quantity."""
         await self.quantity_service.async_decrement_item(call)
 
-    async def async_get_items(self, call: ServiceCall) -> JsonObjectType:
-        """Return full item list for an inventory."""
-        return await self.inventory_service.async_get_items(call)
+    async def async_get_items(self, call: ServiceCall) -> None:
+        """Fetch items and fire an event with the result (service-friendly)."""
+        result = await self.inventory_service.async_get_items(call)
+        self.hass.bus.async_fire(
+            f"{DOMAIN}_get_items_result",
+            {
+                "context_id": call.context.id,
+                "inventory_id": call.data.get("inventory_id"),
+                "inventory_name": call.data.get("inventory_name"),
+                "result": result,
+            },
+        )
 
-    async def async_get_items_from_all_inventories(self, call: ServiceCall) -> JsonObjectType:
-        """Return grouped items for all inventories."""
-        return await self.inventory_service.async_get_items_from_all_inventories(call)
+    async def async_get_items_from_all_inventories(self, call: ServiceCall) -> None:
+        """Fetch all inventories and fire an event with the result (service-friendly)."""
+        result = await self.inventory_service.async_get_items_from_all_inventories(call)
+        self.hass.bus.async_fire(
+            f"{DOMAIN}_get_all_items_result",
+            {
+                "context_id": call.context.id,
+                "result": result,
+            },
+        )
 
 
 __all__ = ["ServiceHandler", "InventoryService", "QuantityService"]

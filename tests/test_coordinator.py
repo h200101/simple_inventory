@@ -1,766 +1,465 @@
-"""Tests for the SimpleInventoryCoordinator class."""
+"""Tests for the SimpleInventoryCoordinator class (SQLite-backed)."""
+
+from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Generator, cast
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.core import HomeAssistant
-from typing_extensions import Self
+from homeassistant.core import EventBus, HomeAssistant
 
 from custom_components.simple_inventory.const import (
-    DEFAULT_EXPIRY_ALERT_DAYS,
     DOMAIN,
     FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED,
     FIELD_DESCRIPTION,
+    FIELD_NAME,
+    FIELD_QUANTITY,
 )
-from custom_components.simple_inventory.coordinator import (
-    SimpleInventoryCoordinator,
-)
-from custom_components.simple_inventory.types import InventoryData
+from custom_components.simple_inventory.coordinator import SimpleInventoryCoordinator
+
+
+@pytest.fixture
+def mock_entry() -> MagicMock:
+    entry = MagicMock()
+    entry.entry_id = "kitchen_123"
+    entry.data = {"name": "Kitchen", "entry_type": "inventory"}
+    entry.title = "Kitchen"
+    return entry
+
+
+@pytest.fixture
+def mock_repository(sample_inventory_data: dict) -> MagicMock:
+    repo = MagicMock()
+
+    repo.async_initialize = AsyncMock()
+
+    # Basic inventory metadata
+    repo.list_inventories = AsyncMock(
+        return_value=[
+            {
+                "id": "kitchen_123",
+                "name": "Kitchen",
+                "description": "",
+                "icon": "",
+                "entry_type": "inventory",
+            },
+            {
+                "id": "pantry_123",
+                "name": "Pantry",
+                "description": "",
+                "icon": "",
+                "entry_type": "inventory",
+            },
+        ]
+    )
+
+    # Use fixture items as "DB rows"
+    repo.list_items_with_details = AsyncMock(
+        side_effect=lambda inv_id: {
+            "kitchen_123": sample_inventory_data["kitchen"]["items"],
+            "pantry_123": sample_inventory_data["pantry"]["items"],
+        }.get(inv_id, [])
+    )
+
+    async def _get_item_by_name(inv_id: str, name: str) -> dict[str, Any] | None:
+        items = await repo.list_items_with_details(inv_id)
+        for it in items:
+            if str(it.get("name", "")).lower() == name.lower():
+                return {"id": it.get("id", f"{inv_id}:{it['name']}"), **it}
+        return None
+
+    repo.get_item_by_name = AsyncMock(side_effect=_get_item_by_name)
+
+    repo.create_item = AsyncMock(return_value="new-item-id")
+    repo.update_item = AsyncMock(return_value=True)
+    repo.delete_item = AsyncMock(return_value=True)
+
+    repo.ensure_location = AsyncMock(return_value=1)
+    repo.set_item_locations = AsyncMock()
+    repo.ensure_category = AsyncMock(return_value=1)
+    repo.set_item_categories = AsyncMock()
+
+    repo.upsert_inventory = AsyncMock()
+
+    return repo
 
 
 @pytest.fixture
 def coordinator(
-    hass: MagicMock,
-) -> Generator[SimpleInventoryCoordinator, None, None]:
-    """Create a SimpleInventoryCoordinator instance."""
-
-    coordinator = SimpleInventoryCoordinator(cast(HomeAssistant, hass))
-
-    with (
-        patch.object(coordinator._store, "async_load", new=AsyncMock(return_value=None)),
-        patch.object(coordinator._store, "async_save", new=AsyncMock()),
-    ):
-        yield coordinator
-
-
-@pytest.fixture
-def loaded_coordinator(
-    hass: MagicMock,
-) -> Generator[SimpleInventoryCoordinator, None, None]:
-    """Create a coordinator with pre-loaded data."""
-    from typing import cast
-
-    from homeassistant.core import HomeAssistant
-
-    coordinator = SimpleInventoryCoordinator(cast(HomeAssistant, hass))
-
-    # Mock data that would be loaded from storage
-    test_data: InventoryData = {
-        "inventories": {
-            "kitchen": {
-                "items": {
-                    "milk": {
-                        "auto_add_enabled": True,
-                        "auto_add_to_list_quantity": 1,
-                        "category": "dairy",
-                        "expiry_date": "2024-12-31",
-                        "location": "fridge",
-                        "quantity": 2,
-                        "todo_list": "todo.shopping",
-                        "unit": "liters",
-                        "description": "Whole milk",
-                        "auto_add_id_to_description_enabled": False,
-                    },
-                    "bread": {
-                        "auto_add_enabled": False,
-                        "auto_add_to_list_quantity": 0,
-                        "category": "bakery",
-                        "expiry_date": "2024-06-20",
-                        "location": "pantry",
-                        "quantity": 1,
-                        "todo_list": "",
-                        "unit": "loaf",
-                        "description": "",
-                        "auto_add_id_to_description_enabled": False,
-                    },
-                }
-            }
-        },
-        "config": {"expiry_alert_days": 7},
-    }
-
-    with (
-        patch.object(
-            coordinator._store,
-            "async_load",
-            new=AsyncMock(return_value=test_data),
-        ),
-        patch.object(coordinator._store, "async_save", new=AsyncMock()),
-    ):
-        coordinator._data = test_data
-        yield coordinator
-
-
-class TestSimpleInventoryCoordinator:
-    """Tests for SimpleInventoryCoordinator class."""
-
-    async def test_init(self: Self, coordinator: SimpleInventoryCoordinator) -> None:
-        """Test coordinator initialization."""
-        assert coordinator.hass is not None
-        assert coordinator._store is not None
-        assert coordinator._data == cast(
-            InventoryData,
-            {
-                "inventories": {},
-                "config": {"expiry_alert_days": DEFAULT_EXPIRY_ALERT_DAYS},
-            },
-        )
-        assert "config" in coordinator._data
-        assert "expiry_alert_days" in coordinator._data["config"]
-        assert coordinator._data["config"]["expiry_alert_days"] == DEFAULT_EXPIRY_ALERT_DAYS
-
-    async def test_async_load_data_empty(
-        self: Self, coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test loading data when storage is empty."""
-        with patch.object(coordinator._store, "async_load", new=AsyncMock(return_value=None)):
-
-            data = await coordinator.async_load_data()
-
-            assert "inventories" in data
-            assert "config" in data
-            assert data["inventories"] == {}
-
-            assert coordinator._data["inventories"] == {}
-
-    async def test_async_load_data_with_content(
-        self: Self, coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test loading data with existing content."""
-        test_data: InventoryData = {
-            "inventories": {"kitchen": {"items": {"milk": {"quantity": 1}}}},
-            "config": {"expiry_alert_days": 14},
-        }
-
-        with patch.object(
-            coordinator._store,
-            "async_load",
-            new=AsyncMock(return_value=test_data),
-        ):
-
-            data = await coordinator.async_load_data()
-
-            assert data == test_data
-            assert coordinator._data == test_data
-
-    async def test_async_load_data_missing_config(
-        self: Self, coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test loading data with missing config section."""
-        test_data: InventoryData = {"inventories": {"kitchen": {"items": {}}}}
-        with patch.object(
-            coordinator._store,
-            "async_load",
-            new=AsyncMock(return_value=test_data),
-        ):
-
-            data = await coordinator.async_load_data()
-
-            # Should add config section
-            assert "config" in data
-            assert coordinator._data["config"] == {}
-
-    async def test_async_save_data(self: Self, coordinator: SimpleInventoryCoordinator) -> None:
-        """Test saving data."""
-        from typing import cast
-
-        from custom_components.simple_inventory.types import InventoryData
-
-        coordinator._data = cast(
-            InventoryData,
-            {
-                "inventories": {"kitchen": {"items": {}}},
-                "config": {"expiry_alert_days": 7},
-            },
-        )
-
-        with (
-            patch.object(coordinator._store, "async_save", new=AsyncMock()) as mock_save,
-            patch.object(coordinator.hass.bus, "async_fire") as mock_fire,
-        ):
-
-            await coordinator.async_save_data()
-
-            mock_save.assert_called_once_with(coordinator._data)
-            # Should fire events for all inventories
-            # One for inventory, one for general update
-            assert mock_fire.call_count == 2
-            mock_fire.assert_any_call(f"{DOMAIN}_updated_kitchen")
-            mock_fire.assert_any_call(f"{DOMAIN}_updated")
-
-    async def test_async_save_data_specific_inventory(
-        self: Self, coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test saving data for a specific inventory."""
-        from typing import cast
-
-        from custom_components.simple_inventory.types import InventoryData
-
-        coordinator._data = cast(
-            InventoryData,
-            {
-                "inventories": {
-                    "kitchen": {"items": {}},
-                    "pantry": {"items": {}},
-                },
-                "config": {"expiry_alert_days": 7},
-            },
-        )
-
-        with (
-            patch.object(coordinator._store, "async_save", new=AsyncMock()) as mock_save,
-            patch.object(coordinator.hass.bus, "async_fire") as mock_fire,
-        ):
-
-            await coordinator.async_save_data(inventory_id="kitchen")
-
-            mock_save.assert_called_once_with(coordinator._data)
-            mock_fire.assert_called_once_with(f"{DOMAIN}_updated_kitchen")
-
-    async def test_get_data(self: Self, loaded_coordinator: SimpleInventoryCoordinator) -> None:
-        """Test getting all data."""
-        data = loaded_coordinator.get_data()
-        assert "inventories" in data
-        assert "kitchen" in data["inventories"]
-        assert "config" in data
-        assert "expiry_alert_days" in data["config"]
-        assert data["config"]["expiry_alert_days"] == 7
-
-    async def test_get_inventory(
-        self: Self, loaded_coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test getting a specific inventory."""
-        inventory = loaded_coordinator.get_inventory("kitchen")
-        assert "items" in inventory
-        assert "milk" in inventory["items"]
-
-        # Test getting non-existent inventory
-        empty_inventory = loaded_coordinator.get_inventory("non_existent")
-        assert empty_inventory == {"items": {}}
-
-    async def test_ensure_inventory_exists(
-        self: Self, coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test ensuring an inventory exists."""
-        # Initially empty
-        assert "pantry" not in coordinator._data["inventories"]
-
-        # After ensuring
-        inventory = coordinator.ensure_inventory_exists("pantry")
-        assert "pantry" in coordinator._data["inventories"]
-        assert inventory == {"items": {}}
-
-        # Ensuring an existing inventory
-        coordinator._data["inventories"]["kitchen"] = {"items": {"milk": {"quantity": 1}}}
-        inventory = coordinator.ensure_inventory_exists("kitchen")
-        assert inventory == {"items": {"milk": {"quantity": 1}}}
-
-    async def test_get_item(self: Self, loaded_coordinator: SimpleInventoryCoordinator) -> None:
-        """Test getting a specific item."""
-        item = loaded_coordinator.get_item("kitchen", "milk")
-        assert item is not None
-        assert item["quantity"] == 2
-        assert item["unit"] == "liters"
-
-        # Test getting non-existent item
-        non_existent = loaded_coordinator.get_item("kitchen", "non_existent")
-        assert non_existent is None
-
-    async def test_get_all_items(
-        self: Self, loaded_coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test getting all items from an inventory."""
-        items = loaded_coordinator.get_all_items("kitchen")
-        assert len(items) == 2
-        assert "milk" in items
-        assert "bread" in items
-
-        # Test getting items from non-existent inventory
-        empty_items = loaded_coordinator.get_all_items("non_existent")
-        assert empty_items == {}
-
-    async def test_update_item(self: Self, loaded_coordinator: SimpleInventoryCoordinator) -> None:
-        """Test updating an existing item."""
-        # Update milk quantity
-        result = loaded_coordinator.update_item(
-            "kitchen", "milk", "milk", quantity=3, unit="gallons"
-        )
-        assert result is True
-
-        # Verify update
-        item = loaded_coordinator.get_item("kitchen", "milk")
-        assert item is not None
-        assert item["quantity"] == 3
-        assert item["unit"] == "gallons"
-
-        # Test updating non-existent item
-        result = loaded_coordinator.update_item(
-            "kitchen", "non_existent", "non_existent", quantity=1
-        )
-        assert result is False
-
-    async def test_update_item_rename(
-        self: Self, loaded_coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test updating an item with a name change."""
-        # Rename milk to whole_milk
-        result = loaded_coordinator.update_item("kitchen", "milk", "whole_milk", quantity=3)
-        assert result is True
-
-        # Verify rename
-        assert loaded_coordinator.get_item("kitchen", "milk") is None
-        item = loaded_coordinator.get_item("kitchen", "whole_milk")
-        assert item is not None
-        assert item["quantity"] == 3
-
-    async def test_add_item(self: Self, coordinator: SimpleInventoryCoordinator) -> None:
-        """Test adding a new item."""
-        # Add new item
-        result = coordinator.add_item(
-            "kitchen",
-            name="milk",
-            quantity=2,
-            unit="liters",
-            category="dairy",
-            location="fridge",
-            expiry_date="2024-12-31",
-            auto_add_enabled=True,
-            auto_add_to_list_quantity=1,
-            todo_list="todo.shopping",
-        )
-        assert result is True
-
-        # Verify item was added
-        item = coordinator.get_item("kitchen", "milk")
-        assert item is not None
-        assert item["quantity"] == 2
-        assert item["unit"] == "liters"
-        assert item["category"] == "dairy"
-        assert item["location"] == "fridge"
-        assert item["expiry_date"] == "2024-12-31"
-        assert item["auto_add_enabled"] is True
-        assert item["auto_add_to_list_quantity"] == 1
-        assert item["todo_list"] == "todo.shopping"
-
-    async def test_add_item_with_zero_auto_add_quantity(
-        self: Self, coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test adding item with auto-add quantity set to 0."""
-        result = coordinator.add_item(
-            "kitchen",
-            name="bread",
-            quantity=3,
-            auto_add_enabled=True,
-            auto_add_to_list_quantity=0,
-            todo_list="todo.shopping",
-        )
-        assert result is True
-
-        item = coordinator.get_item("kitchen", "bread")
-        assert item is not None
-        assert item["auto_add_to_list_quantity"] == 0
-
-    async def test_add_item_auto_add_with_none_todo_list_fails(
-        self: Self, coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test that auto-add enabled with None todo list fails."""
-        result = coordinator.add_item(
-            "kitchen",
-            name="butter",
-            quantity=1,
-            auto_add_enabled=True,
-            auto_add_to_list_quantity=0,
-            todo_list=cast(str, None),  # None todo list should fail
-        )
-        assert result is False
-
-        item = coordinator.get_item("kitchen", "butter")
-        assert item is None
-
-    async def test_add_item_existing(
-        self: Self, loaded_coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test adding an existing item (should update quantity)."""
-        # Initial quantity is 2
-        initial_item = loaded_coordinator.get_item("kitchen", "milk")
-        assert initial_item is not None
-        assert initial_item["quantity"] == 2
-
-        # Add 3 more
-        result = loaded_coordinator.add_item("kitchen", name="milk", quantity=3)
-        assert result is True
-
-        # Verify quantity was updated
-        updated_item = loaded_coordinator.get_item("kitchen", "milk")
-        assert updated_item is not None
-        assert updated_item["quantity"] == 5  # 2 + 3
-
-    async def test_add_item_empty_name(self: Self, coordinator: SimpleInventoryCoordinator) -> None:
-        """Test adding an item with empty name."""
-        with pytest.raises(ValueError, match="Cannot add item with empty name"):
-            coordinator.add_item("kitchen", name="", quantity=1)
-
-        with pytest.raises(ValueError, match="Cannot add item with empty name"):
-            coordinator.add_item("kitchen", name="  ", quantity=1)
-
-    async def test_add_item_negative_quantity(
-        self: Self, coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test adding an item with negative quantity."""
-        result = coordinator.add_item("kitchen", name="milk", quantity=-3)
-        assert result is True
-
-        # Quantity should be set to 0 (max of 0 and -3)
-        item = coordinator.get_item("kitchen", "milk")
-        assert item is not None
-        assert item["quantity"] == 0
-
-    async def test_add_item_negative_auto_add_quantity(
-        self: Self, coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test adding an item with negative auto add quantity."""
-        result = coordinator.add_item(
-            "kitchen", name="milk", quantity=1, auto_add_to_list_quantity=-2
-        )
-        assert result is True
-
-        # Auto add quantity should be set to 0 (max of 0 and -2)
-        item = coordinator.get_item("kitchen", "milk")
-        assert item is not None
-        assert item["auto_add_to_list_quantity"] == 0
-
-    async def test_remove_item(self: Self, loaded_coordinator: SimpleInventoryCoordinator) -> None:
-        """Test removing an item."""
-        # Verify item exists
-        assert loaded_coordinator.get_item("kitchen", "milk") is not None
-
-        # Remove item
-        result = loaded_coordinator.remove_item("kitchen", "milk")
-        assert result is True
-
-        # Verify item was removed
-        assert loaded_coordinator.get_item("kitchen", "milk") is None
-
-        # Test removing non-existent item
-        result = loaded_coordinator.remove_item("kitchen", "non_existent")
-        assert result is False
-
-        # Test removing with empty name
-        result = loaded_coordinator.remove_item("kitchen", "")
-        assert result is False
-
-    async def test_increment_item(
-        self: Self, loaded_coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test incrementing item quantity."""
-        # Initial quantity is 2
-        initial_item = loaded_coordinator.get_item("kitchen", "milk")
-        assert initial_item is not None
-        assert initial_item["quantity"] == 2
-
-        # Increment by default (1)
-        result = loaded_coordinator.increment_item("kitchen", "milk")
-        assert result is True
-
-        # Verify quantity was incremented
-        updated_item = loaded_coordinator.get_item("kitchen", "milk")
-        assert updated_item is not None
-        assert updated_item["quantity"] == 3
-
-        # Increment by specific amount
-        result = loaded_coordinator.increment_item("kitchen", "milk", 2)
-        assert result is True
-        updated_item = loaded_coordinator.get_item("kitchen", "milk")
-        assert updated_item is not None
-        assert updated_item["quantity"] == 5
-
-        # Test incrementing non-existent item
-        result = loaded_coordinator.increment_item("kitchen", "non_existent")
-        assert result is False
-
-        # Test incrementing with empty name
-        result = loaded_coordinator.increment_item("kitchen", "")
-        assert result is False
-
-        # Test incrementing with negative amount
-        result = loaded_coordinator.increment_item("kitchen", "milk", -1)
-        assert result is False
-
-    async def test_decrement_item(
-        self: Self, loaded_coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test decrementing item quantity."""
-        # Initial quantity is 2
-        initial_item = loaded_coordinator.get_item("kitchen", "milk")
-        assert initial_item is not None
-        assert initial_item["quantity"] == 2
-
-        # Decrement by default (1)
-        result = loaded_coordinator.decrement_item("kitchen", "milk")
-        assert result is True
-
-        # Verify quantity was decremented
-        updated_item = loaded_coordinator.get_item("kitchen", "milk")
-        assert updated_item is not None
-        assert updated_item["quantity"] == 1
-
-        # Decrement by specific amount
-        result = loaded_coordinator.decrement_item("kitchen", "milk", 1)
-        assert result is True
-        updated_item = loaded_coordinator.get_item("kitchen", "milk")
-        assert updated_item is not None
-        assert updated_item["quantity"] == 0
-
-        # Test decrementing below 0 (should stay at 0)
-        result = loaded_coordinator.decrement_item("kitchen", "milk", 5)
-        assert result is True
-        updated_item = loaded_coordinator.get_item("kitchen", "milk")
-        assert updated_item is not None
-        assert updated_item["quantity"] == 0
-
-        # Test decrementing non-existent item
-        result = loaded_coordinator.decrement_item("kitchen", "non_existent")
-        assert result is False
-
-        # Test decrementing with empty name
-        result = loaded_coordinator.decrement_item("kitchen", "")
-        assert result is False
-
-        # Test decrementing with negative amount
-        result = loaded_coordinator.decrement_item("kitchen", "milk", -1)
-        assert result is False
-
-    @patch("datetime.datetime")
-    async def test_get_items_expiring_soon(
-        self: Self,
-        mock_datetime: MagicMock,
-        loaded_coordinator: SimpleInventoryCoordinator,
-    ) -> None:
-        """Test getting items expiring soon."""
-        # Set up a fixed current date for testing
-        fixed_date = datetime(2024, 6, 15)
-        today = fixed_date.date()
-
-        # Configure the mock
-        mock_datetime.now.return_value = fixed_date
-        mock_datetime.strptime.side_effect = datetime.strptime
-
-        # Calculate dates relative to the fixed date
-        date_1_day_ahead = (today + timedelta(days=1)).strftime("%Y-%m-%d")  # 1 day from now
-        date_5_days_ahead = (today + timedelta(days=5)).strftime("%Y-%m-%d")  # 5 days from now
-        date_15_days_ahead = (today + timedelta(days=15)).strftime("%Y-%m-%d")  # 15 days from now
-
-        # Set up test data with calculated dates
-        loaded_coordinator._data = {
-            "inventories": {
-                "kitchen": {
-                    "items": {
-                        "milk": {
-                            "quantity": 1,
-                            "expiry_date": date_5_days_ahead,  # 5 days from now
-                            "expiry_alert_days": 7,
-                        },
-                        "yogurt": {
-                            "quantity": 1,
-                            "expiry_date": date_1_day_ahead,  # 1 day from now
-                            "expiry_alert_days": 7,
-                        },
-                        "cheese": {
-                            "quantity": 1,
-                            # 15 days from now (beyond default threshold)
-                            "expiry_date": date_15_days_ahead,
-                            "expiry_alert_days": 7,
-                        },
-                        # No expiry date
-                        "bread": {"quantity": 1, "expiry_date": ""},
-                    }
-                }
-            },
-            "config": {"expiry_alert_days": 7},
-        }
-
-        # Patch the datetime in the method directly
-        with patch("custom_components.simple_inventory.coordinator.datetime") as patched_dt:
-            patched_dt.now.return_value = fixed_date
-            patched_dt.strptime = datetime.strptime
-
-            # Call the method
-            expiring_items = loaded_coordinator.get_items_expiring_soon("kitchen")
-
-        # Print debug info
-        print(f"Fixed date: {fixed_date}")
-        print(f"Found {len(expiring_items)} expiring items:")
-        for item in expiring_items:
-            print(
-                f"  - {item['name']}: expiry={item['expiry_date']
-                                              }, days={item['days_until_expiry']}"
-            )
-
-        # Should include milk and yogurt (within 7 days), but not cheese
-        # (beyond threshold) or bread (no date)
-        assert (
-            len(expiring_items) == 2
-        ), f"Expected 2 items but found {
-            len(expiring_items)}: {[item['name'] for item in expiring_items]}"
-
-        # Items should be sorted by days until expiry (soonest first)
-        assert (
-            expiring_items[0]["name"] == "yogurt"
-        ), f"Expected yogurt but got {
-            expiring_items[0]['name']}"
-        assert (
-            expiring_items[1]["name"] == "milk"
-        ), f"Expected milk but got {
-            expiring_items[1]['name']}"
-
-        # Check days_until_expiry calculation
-        assert (
-            expiring_items[0]["days_until_expiry"] == 1
-        ), f"Expected 1 day but got {
-            expiring_items[0]['days_until_expiry']}"
-        assert (
-            expiring_items[1]["days_until_expiry"] == 5
-        ), f"Expected 5 days but got {
-            expiring_items[1]['days_until_expiry']}"
-
-    async def test_async_add_listener(self: Self, coordinator: SimpleInventoryCoordinator) -> None:
-        """Test adding a listener."""
-        listener = MagicMock()
-
-        remove_listener = coordinator.async_add_listener(listener)
-
-        assert listener in coordinator._listeners
-
-        remove_listener()
-
-        assert listener not in coordinator._listeners
-
-    async def test_notify_listeners(self: Self, coordinator: SimpleInventoryCoordinator) -> None:
-        """Test notifying listeners."""
-        listener1 = MagicMock()
-        listener2 = MagicMock()
-
-        coordinator.async_add_listener(listener1)
-        coordinator.async_add_listener(listener2)
-
-        coordinator.notify_listeners()
-
-        listener1.assert_called_once()
-        listener2.assert_called_once()
-
-    async def test_get_inventory_statistics(
-        self: Self, loaded_coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Test getting inventory statistics."""
-        loaded_coordinator._data["inventories"]["kitchen"]["items"]["yogurt"] = {
-            "auto_add_enabled": False,
-            "auto_add_to_list_quantity": 2,  # Below threshold
-            "category": "dairy",
-            "expiry_date": "2024-06-16",  # Expiring soon
-            "location": "fridge",
-            "quantity": 1,
-            "todo_list": "",
-            "unit": "cup",
-        }
-
-        loaded_coordinator._data["inventories"]["kitchen"]["items"]["rice"] = {
-            "auto_add_enabled": False,
-            "auto_add_to_list_quantity": 2,
-            "category": "grains",
-            "expiry_date": "2025-06-15",
-            "location": "pantry",
-            "quantity": 5,
-            "todo_list": "",
-            "unit": "kg",
-        }
-
-        with patch.object(
-            loaded_coordinator,
-            "get_items_expiring_soon",
-            return_value=[
-                {"name": "yogurt", "days_until_expiry": 1},
-                {"name": "milk", "days_until_expiry": 5},
-            ],
-        ):
-
-            stats = loaded_coordinator.get_inventory_statistics("kitchen")
-
-            # Verify statistics
-            assert stats["total_items"] == 4  # milk, bread, yogurt, rice
-            assert stats["total_quantity"] == 9  # 2 + 1 + 1 + 5
-
-            # Verify categories
-            assert "dairy" in stats["categories"]
-            assert stats["categories"]["dairy"] == 2  # milk, yogurt
-            assert "bakery" in stats["categories"]
-            assert stats["categories"]["bakery"] == 1  # bread
-            assert "grains" in stats["categories"]
-            assert stats["categories"]["grains"] == 1  # rice
-
-            # Verify locations
-            assert "fridge" in stats["locations"]
-            assert stats["locations"]["fridge"] == 2  # milk, yogurt
-            assert "pantry" in stats["locations"]
-            assert stats["locations"]["pantry"] == 2  # bread, rice
-
-            # Verify below threshold
-            assert len(stats["below_threshold"]) == 1  # yogurt
-            assert stats["below_threshold"][0]["name"] == "yogurt"
-
-            # Verify expiring items
-            assert len(stats["expiring_items"]) == 2  # milk, yogurt
-
-    async def test_add_item_applies_description_suffix(
-        self: Self, coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """ensure description suffix is appended when flag enabled."""
-        result = coordinator.add_item(
-            "kitchen",
+    hass: HomeAssistant, mock_entry: MagicMock, mock_repository: MagicMock
+) -> SimpleInventoryCoordinator:
+    return SimpleInventoryCoordinator(hass, mock_entry, mock_repository)
+
+
+@pytest.mark.asyncio
+async def test_async_unload_removes_listeners(
+    coordinator: SimpleInventoryCoordinator,
+) -> None:
+    listener = MagicMock()
+    remove = coordinator.async_add_listener(listener)
+    assert listener in coordinator._listeners
+
+    await coordinator.async_unload()
+    assert coordinator._listeners == []
+
+    # remove callback should be safe even after unload
+    remove()
+    assert coordinator._listeners == []
+
+
+@pytest.mark.asyncio
+async def test_async_initialize_is_idempotent(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    await coordinator.async_initialize()
+    await coordinator.async_initialize()
+    # Coordinator init should not call repo.async_initialize (repo is initialized in __init__.py),
+    # but if you ever add it back, this test will catch multiple calls.
+    mock_repository.async_initialize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_async_save_data_fires_events(
+    coordinator: SimpleInventoryCoordinator,
+) -> None:
+    with patch.object(EventBus, "async_fire") as mock_fire:
+        await coordinator.async_save_data("kitchen_123")
+
+        mock_fire.assert_any_call(f"{DOMAIN}_updated_kitchen_123")
+        mock_fire.assert_any_call(f"{DOMAIN}_updated")
+
+
+@pytest.mark.asyncio
+async def test_async_add_item_applies_description_suffix(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.create_item.reset_mock()
+
+    with patch.object(EventBus, "async_fire"):
+        item_id = await coordinator.async_add_item(
+            "kitchen_123",
             name="coffee",
             quantity=1,
             description="Pantry staple",
             auto_add_id_to_description_enabled=True,
         )
-        assert result is True
 
-        item = coordinator.get_item("kitchen", "coffee")
-        assert item is not None
-        assert item[FIELD_DESCRIPTION] == "Pantry staple (kitchen)"
-        assert item[FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED] is True
+    assert item_id == "new-item-id"
+    assert mock_repository.create_item.await_count == 1
 
-    async def test_update_item_recalculates_description_on_flag_toggle(
-        self: Self, loaded_coordinator: SimpleInventoryCoordinator
-    ) -> None:
-        """Ensure description updates when the flag changes."""
-        milk = loaded_coordinator.get_item("kitchen", "milk")
-        assert milk is not None
-        milk[FIELD_DESCRIPTION] = "Fresh milk (kitchen)"
-        milk[FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED] = True
+    # Verify payload passed to repository includes suffix
+    _, args, _ = mock_repository.create_item.mock_calls[0]
+    assert args[0] == "kitchen_123"
+    payload = args[1]
+    assert payload[FIELD_NAME] == "coffee"
+    assert payload[FIELD_DESCRIPTION] == "Pantry staple (kitchen_123)"
+    assert payload[FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED] is True
 
-        # Disable flag -> suffix removed
-        result = loaded_coordinator.update_item(
-            "kitchen",
-            "milk",
-            "milk",
+
+@pytest.mark.asyncio
+async def test_async_add_item_empty_name_raises(coordinator: SimpleInventoryCoordinator) -> None:
+    with pytest.raises(ValueError):
+        await coordinator.async_add_item("kitchen_123", name="", quantity=1)
+
+    with pytest.raises(ValueError):
+        await coordinator.async_add_item("kitchen_123", name="   ", quantity=1)
+
+
+@pytest.mark.asyncio
+async def test_async_increment_item_item_missing_returns_false(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(return_value=None)
+
+    ok = await coordinator.async_increment_item("kitchen_123", "nope", 1)
+    assert ok is False
+    mock_repository.update_item.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_async_increment_item_update_fails_returns_false(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(return_value={"id": "x", "quantity": 1})
+    mock_repository.update_item = AsyncMock(return_value=False)
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_increment_item("kitchen_123", "milk", 1)
+
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_async_update_item_updates_location_and_category(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "item1", "name": "milk", "quantity": 2}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+    mock_repository.ensure_location = AsyncMock(return_value=7)
+    mock_repository.ensure_category = AsyncMock(return_value=9)
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_update_item(
+            "kitchen_123",
+            old_name="milk",
+            new_name="milk",
+            location="Fridge",
+            category="Dairy",
+            quantity=2,
+        )
+
+    assert ok is True
+    mock_repository.ensure_location.assert_awaited_once_with("kitchen_123", "Fridge")
+    mock_repository.set_item_locations.assert_awaited_once_with("item1", [(7, 2)])
+    mock_repository.ensure_category.assert_awaited_once_with("Dairy")
+    mock_repository.set_item_categories.assert_awaited_once_with("item1", [9])
+
+
+@pytest.mark.asyncio
+async def test_async_get_items_expiring_soon_skips_invalid_date(
+    coordinator: SimpleInventoryCoordinator,
+    mock_repository: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mock_repository.list_items_with_details = AsyncMock(
+        return_value=[
+            {"name": "bad", "expiry_date": "not-a-date", "expiry_alert_days": 7, "quantity": 1},
+        ]
+    )
+
+    with caplog.at_level("WARNING"):
+        items = await coordinator.async_get_items_expiring_soon("kitchen_123")
+
+    assert items == []
+    assert "Invalid expiry date format" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_async_get_items_expiring_soon_global_uses_list_inventories(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    today = datetime.now().date()
+    soon = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    mock_repository.list_inventories = AsyncMock(
+        return_value=[{"id": "kitchen_123"}, {"id": "pantry_123"}]
+    )
+    mock_repository.list_items_with_details = AsyncMock(
+        side_effect=lambda inv_id: [
+            {"name": f"{inv_id}_item", "expiry_date": soon, "expiry_alert_days": 7, "quantity": 1}
+        ]
+    )
+
+    items = await coordinator.async_get_items_expiring_soon()
+
+    assert len(items) == 2
+    assert {i["inventory_id"] for i in items} == {"kitchen_123", "pantry_123"}
+
+
+@pytest.mark.asyncio
+async def test_async_add_item_invalid_auto_add_config_returns_none(
+    coordinator: SimpleInventoryCoordinator,
+) -> None:
+    # auto_add_enabled=True but todo_list empty => should fail validation
+    item_id = await coordinator.async_add_item(
+        "kitchen_123",
+        name="butter",
+        quantity=1,
+        auto_add_enabled=True,
+        auto_add_to_list_quantity=0,
+        todo_list="",
+    )
+    assert item_id is None
+
+
+@pytest.mark.asyncio
+async def test_async_update_item_recalculates_description_on_flag_toggle(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    # Existing item in repository without suffix
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={
+            "id": "milk-id",
+            "name": "milk",
+            "description": "Fresh milk (kitchen_123)",
+            "quantity": 2,
+            "auto_add_id_to_description_enabled": True,
+        }
+    )
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_update_item(
+            "kitchen_123",
+            old_name="milk",
+            new_name="milk",
             auto_add_id_to_description_enabled=False,
+            description="Fresh milk (kitchen_123)",
         )
-        assert result is True
-        updated = loaded_coordinator.get_item("kitchen", "milk")
-        assert updated is not None
-        assert updated[FIELD_DESCRIPTION] == "Fresh milk"
-        assert updated[FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED] is False
 
-        # Enable flag again -> suffix re-added
-        result = loaded_coordinator.update_item(
-            "kitchen",
-            "milk",
-            "milk",
-            auto_add_id_to_description_enabled=True,
-        )
-        assert result is True
-        updated_again = loaded_coordinator.get_item("kitchen", "milk")
-        assert updated_again is not None
-        assert updated_again[FIELD_DESCRIPTION] == "Fresh milk (kitchen)"
-        assert updated_again[FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED] is True
+    assert ok is True
+    assert mock_repository.update_item.await_count == 1
+
+    # update_item(item_id, payload)
+    _, args, _ = mock_repository.update_item.mock_calls[0]
+    assert args[0] == "milk-id"
+    payload = args[1]
+    assert payload[FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED] is False
+    assert payload[FIELD_DESCRIPTION] == "Fresh milk"
+
+
+@pytest.mark.asyncio
+async def test_async_remove_item_deletes_when_present(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(return_value={"id": "x", "name": "milk"})
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_remove_item("kitchen_123", "milk")
+
+    assert ok is True
+    mock_repository.delete_item.assert_awaited_once_with("x")
+
+
+@pytest.mark.asyncio
+async def test_async_remove_item_returns_false_when_missing(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(return_value=None)
+    ok = await coordinator.async_remove_item("kitchen_123", "nope")
+    assert ok is False
+    mock_repository.delete_item.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_async_increment_item_adjusts_quantity(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(return_value={"id": "milk-id", "quantity": 2})
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_increment_item("kitchen_123", "milk", 3)
+
+    assert ok is True
+    mock_repository.update_item.assert_awaited_once_with("milk-id", {FIELD_QUANTITY: 5})
+
+
+@pytest.mark.asyncio
+async def test_async_increment_item_negative_amount_fails(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    ok = await coordinator.async_increment_item("kitchen_123", "milk", -1)
+    assert ok is False
+    mock_repository.get_item_by_name.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_async_decrement_item_does_not_go_below_zero(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(return_value={"id": "milk-id", "quantity": 2})
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_decrement_item("kitchen_123", "milk", 99)
+
+    assert ok is True
+    mock_repository.update_item.assert_awaited_once_with("milk-id", {FIELD_QUANTITY: 0})
+
+
+@pytest.mark.asyncio
+async def test_async_get_item_passthrough(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(return_value={"id": "x", "name": "milk"})
+    item = await coordinator.async_get_item("kitchen_123", "milk")
+    assert item is not None
+    assert item["name"] == "milk"
+
+
+@pytest.mark.asyncio
+async def test_async_list_items_passthrough(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.list_items_with_details = AsyncMock(return_value=[{"name": "milk"}])
+    items = await coordinator.async_list_items("kitchen_123")
+    assert items == [{"name": "milk"}]
+
+
+@pytest.mark.asyncio
+async def test_async_get_inventory_statistics_counts(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    # minimal two items
+    mock_repository.list_items_with_details = AsyncMock(
+        return_value=[
+            {
+                "name": "milk",
+                "quantity": 2,
+                "category": "dairy",
+                "location": "fridge",
+                "locations": [],
+            },
+            {
+                "name": "bread",
+                "quantity": 1,
+                "category": "bakery",
+                "location": "pantry",
+                "locations": [],
+            },
+        ]
+    )
+
+    with patch.object(coordinator, "async_get_items_expiring_soon", new=AsyncMock(return_value=[])):
+        stats = await coordinator.async_get_inventory_statistics("kitchen_123")
+
+    assert stats["total_items"] == 2
+    assert stats["total_quantity"] == 3
+    assert stats["categories"]["dairy"] == 1
+    assert stats["categories"]["bakery"] == 1
+
+
+@pytest.mark.asyncio
+async def test_async_get_items_expiring_soon_filters_and_sorts(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    today = datetime.now().date()
+    soon = (today + timedelta(days=2)).strftime("%Y-%m-%d")
+    later = (today + timedelta(days=30)).strftime("%Y-%m-%d")
+    expired = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    mock_repository.list_items_with_details = AsyncMock(
+        return_value=[
+            {"name": "soon", "expiry_date": soon, "expiry_alert_days": 7, "quantity": 1},
+            {"name": "later", "expiry_date": later, "expiry_alert_days": 7, "quantity": 1},
+            {"name": "expired", "expiry_date": expired, "expiry_alert_days": 7, "quantity": 1},
+            {"name": "no_date", "expiry_date": "", "expiry_alert_days": 7, "quantity": 1},
+            {"name": "zero_qty", "expiry_date": soon, "expiry_alert_days": 7, "quantity": 0},
+        ]
+    )
+
+    items = await coordinator.async_get_items_expiring_soon("kitchen_123")
+
+    # later/no_date/zero_qty excluded, remaining expired + soon
+    names = [it["name"] for it in items]
+    assert names == ["expired", "soon"]
+    assert items[0]["days_until_expiry"] < items[1]["days_until_expiry"]
+
+
+def test_async_add_listener_and_notify(coordinator: SimpleInventoryCoordinator) -> None:
+    listener1 = MagicMock()
+    listener2 = MagicMock()
+
+    remove1 = coordinator.async_add_listener(listener1)
+    coordinator.async_add_listener(listener2)
+
+    coordinator.notify_listeners()
+
+    listener1.assert_called_once()
+    listener2.assert_called_once()
+
+    remove1()
+    assert listener1 not in coordinator._listeners
