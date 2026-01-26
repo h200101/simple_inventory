@@ -397,9 +397,24 @@ class InventoryRepository:
         }
 
         conn = self._connection()
+        params = (
+            item_id,
+            inventory_id,
+            payload[FIELD_NAME],
+            payload[FIELD_DESCRIPTION],
+            payload[FIELD_QUANTITY],
+            payload[FIELD_UNIT],
+            payload[FIELD_EXPIRY_DATE],
+            payload[FIELD_EXPIRY_ALERT_DAYS],
+            payload[FIELD_AUTO_ADD_ENABLED],
+            payload[FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED],
+            payload[FIELD_AUTO_ADD_TO_LIST_QUANTITY],
+            payload[FIELD_TODO_LIST],
+        )
+
         async with self._lock:
             cursor = await conn.execute(
-                """
+                """ # noqa: E501
                 INSERT INTO items (
                     id, inventory_id, name, description, quantity, unit,
                     expiry_date, expiry_alert_days,
@@ -432,20 +447,7 @@ class InventoryRepository:
                     updated_at = CURRENT_TIMESTAMP
                 RETURNING id
                 """,
-                (
-                    item_id,
-                    inventory_id,
-                    payload[FIELD_NAME],
-                    payload[FIELD_DESCRIPTION],
-                    payload[FIELD_QUANTITY],
-                    payload[FIELD_UNIT],
-                    payload[FIELD_EXPIRY_DATE],
-                    payload[FIELD_EXPIRY_ALERT_DAYS],
-                    payload[FIELD_AUTO_ADD_ENABLED],
-                    payload[FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED],
-                    payload[FIELD_AUTO_ADD_TO_LIST_QUANTITY],
-                    payload[FIELD_TODO_LIST],
-                ),
+                params,
             )
             row = await cursor.fetchone()
             await cursor.close()
