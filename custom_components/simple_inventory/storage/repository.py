@@ -171,8 +171,7 @@ class InventoryRepository:
         async with self._lock:
             assert self._conn is not None
 
-            await self._conn.executescript(
-                """
+            await self._conn.executescript("""
                 DROP INDEX IF EXISTS idx_items_name_inventory;
                 DROP INDEX IF EXISTS idx_locations_unique_name;
 
@@ -255,8 +254,7 @@ class InventoryRepository:
                     FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
                     FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
                 );
-                """
-            )
+                """)
 
             await self._ensure_schema_version()
             await self._conn.commit()
@@ -354,14 +352,12 @@ class InventoryRepository:
     async def list_inventories(self) -> list[dict[str, Any]]:
         """Return all inventories."""
         conn = self._connection()
-        cursor = await conn.execute(
-            """
+        cursor = await conn.execute("""
             SELECT id, name, description, icon, entry_type, metadata,
                    created_at, updated_at
             FROM inventories
             ORDER BY name COLLATE NOCASE
-            """
-        )
+            """)
         rows = await cursor.fetchall()
         await cursor.close()
         return [
@@ -414,7 +410,7 @@ class InventoryRepository:
 
         async with self._lock:
             cursor = await conn.execute(
-                """ # noqa: E501
+                """
                 INSERT INTO items (
                     id, inventory_id, name, description, quantity, unit,
                     expiry_date, expiry_alert_days,
