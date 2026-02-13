@@ -13,8 +13,10 @@ from custom_components.simple_inventory.const import (
     DOMAIN,
     FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED,
     FIELD_DESCRIPTION,
+    FIELD_DESIRED_QUANTITY,
     FIELD_NAME,
     FIELD_QUANTITY,
+    FIELD_TODO_QUANTITY_PLACEMENT,
 )
 from custom_components.simple_inventory.coordinator import SimpleInventoryCoordinator
 
@@ -81,6 +83,15 @@ def mock_repository(sample_inventory_data: dict) -> MagicMock:
     repo.set_item_categories = AsyncMock()
 
     repo.upsert_inventory = AsyncMock()
+
+    repo.add_item_barcode = AsyncMock()
+    repo.remove_item_barcode = AsyncMock()
+    repo.get_item_by_barcode = AsyncMock(return_value=None)
+    repo.get_barcodes_for_item = AsyncMock(return_value=[])
+
+    repo.record_history_event = AsyncMock(return_value="event-id")
+    repo.get_item_history = AsyncMock(return_value=[])
+    repo.get_inventory_history = AsyncMock(return_value=[])
 
     return repo
 
@@ -158,6 +169,54 @@ async def test_async_add_item_applies_description_suffix(
 
 
 @pytest.mark.asyncio
+async def test_async_add_item_empty_description_with_id_suffix(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    """Empty description + auto_add_id should produce '(inv_id)' and not double on re-edit."""
+    mock_repository.create_item.reset_mock()
+
+    with patch.object(EventBus, "async_fire"):
+        await coordinator.async_add_item(
+            "kitchen_123",
+            name="sugar",
+            quantity=1,
+            description="",
+            auto_add_id_to_description_enabled=True,
+        )
+
+    _, args, _ = mock_repository.create_item.mock_calls[0]
+    payload = args[1]
+    assert payload[FIELD_DESCRIPTION] == "(kitchen_123)"
+
+    # Simulate editing the item: the frontend sends back the stored description
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={
+            "id": "sugar-id",
+            "name": "sugar",
+            "description": "(kitchen_123)",
+            "quantity": 1,
+            "auto_add_id_to_description_enabled": True,
+        }
+    )
+    mock_repository.update_item.reset_mock()
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_update_item(
+            "kitchen_123",
+            old_name="sugar",
+            new_name="sugar",
+            description="(kitchen_123)",
+            auto_add_id_to_description_enabled=True,
+        )
+
+    assert ok is True
+    _, args, _ = mock_repository.update_item.mock_calls[0]
+    update_payload = args[1]
+    # Must NOT double to "(kitchen_123) (kitchen_123)"
+    assert update_payload[FIELD_DESCRIPTION] == "(kitchen_123)"
+
+
+@pytest.mark.asyncio
 async def test_async_add_item_empty_name_raises(coordinator: SimpleInventoryCoordinator) -> None:
     with pytest.raises(ValueError):
         await coordinator.async_add_item("kitchen_123", name="", quantity=1)
@@ -213,9 +272,90 @@ async def test_async_update_item_updates_location_and_category(
 
     assert ok is True
     mock_repository.ensure_location.assert_awaited_once_with("kitchen_123", "Fridge")
-    mock_repository.set_item_locations.assert_awaited_once_with("item1", [(7, 2)])
+    mock_repository.set_item_locations.assert_awaited_once_with("item1", [7])
     mock_repository.ensure_category.assert_awaited_once_with("Dairy")
     mock_repository.set_item_categories.assert_awaited_once_with("item1", [9])
+
+
+@pytest.mark.asyncio
+async def test_async_update_item_comma_separated_locations(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    """Comma-separated location string should ensure each location individually."""
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "item1", "name": "milk", "quantity": 2}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    loc_id_map = {"Fridge": 7, "Pantry": 8}
+    mock_repository.ensure_location = AsyncMock(side_effect=lambda inv_id, name: loc_id_map[name])
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_update_item(
+            "kitchen_123",
+            old_name="milk",
+            new_name="milk",
+            location="Fridge, Pantry",
+            quantity=2,
+        )
+
+    assert ok is True
+    assert mock_repository.ensure_location.await_count == 2
+    mock_repository.ensure_location.assert_any_await("kitchen_123", "Fridge")
+    mock_repository.ensure_location.assert_any_await("kitchen_123", "Pantry")
+    mock_repository.set_item_locations.assert_awaited_once_with("item1", [7, 8])
+
+
+@pytest.mark.asyncio
+async def test_async_update_item_comma_separated_categories(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    """Comma-separated category string should ensure each category individually."""
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "item1", "name": "milk", "quantity": 2}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    cat_id_map = {"Dairy": 9, "Refrigerated": 10}
+    mock_repository.ensure_category = AsyncMock(side_effect=lambda name: cat_id_map[name])
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_update_item(
+            "kitchen_123",
+            old_name="milk",
+            new_name="milk",
+            category="Dairy, Refrigerated",
+        )
+
+    assert ok is True
+    assert mock_repository.ensure_category.await_count == 2
+    mock_repository.ensure_category.assert_any_await("Dairy")
+    mock_repository.ensure_category.assert_any_await("Refrigerated")
+    mock_repository.set_item_categories.assert_awaited_once_with("item1", [9, 10])
+
+
+@pytest.mark.asyncio
+async def test_async_add_item_comma_separated_locations_trimmed(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    """Extra spaces in comma-separated values should be trimmed."""
+    mock_repository.create_item.reset_mock()
+
+    loc_id_map = {"Fridge": 7, "Pantry": 8}
+    mock_repository.ensure_location = AsyncMock(side_effect=lambda inv_id, name: loc_id_map[name])
+
+    with patch.object(EventBus, "async_fire"):
+        await coordinator.async_add_item(
+            "kitchen_123",
+            name="milk",
+            quantity=2,
+            location="  Fridge ,  Pantry  ",
+        )
+
+    assert mock_repository.ensure_location.await_count == 2
+    mock_repository.ensure_location.assert_any_await("kitchen_123", "Fridge")
+    mock_repository.ensure_location.assert_any_await("kitchen_123", "Pantry")
+    mock_repository.set_item_locations.assert_awaited_once_with("new-item-id", [7, 8])
 
 
 @pytest.mark.asyncio
@@ -348,6 +488,34 @@ async def test_async_increment_item_adjusts_quantity(
 
 
 @pytest.mark.asyncio
+async def test_async_increment_item_decimal_amount(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(return_value={"id": "bacon-id", "quantity": 1.0})
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_increment_item("kitchen_123", "bacon", 0.5)
+
+    assert ok is True
+    mock_repository.update_item.assert_awaited_once_with("bacon-id", {FIELD_QUANTITY: 1.5})
+
+
+@pytest.mark.asyncio
+async def test_async_decrement_item_decimal_amount(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(return_value={"id": "bacon-id", "quantity": 1.5})
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_decrement_item("kitchen_123", "bacon", 0.5)
+
+    assert ok is True
+    mock_repository.update_item.assert_awaited_once_with("bacon-id", {FIELD_QUANTITY: 1.0})
+
+
+@pytest.mark.asyncio
 async def test_async_increment_item_negative_amount_fails(
     coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
 ) -> None:
@@ -463,3 +631,475 @@ def test_async_add_listener_and_notify(coordinator: SimpleInventoryCoordinator) 
 
     remove1()
     assert listener1 not in coordinator._listeners
+
+
+@pytest.mark.asyncio
+async def test_async_add_item_passes_desired_quantity(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    """Test async_add_item passes desired_quantity through to repository."""
+    mock_repository.create_item.reset_mock()
+
+    with patch.object(EventBus, "async_fire"):
+        item_id = await coordinator.async_add_item(
+            "kitchen_123",
+            name="Bacon",
+            quantity=2,
+            desired_quantity=10,
+        )
+
+    assert item_id == "new-item-id"
+    assert mock_repository.create_item.await_count == 1
+
+    _, args, _ = mock_repository.create_item.mock_calls[0]
+    payload = args[1]
+    assert payload[FIELD_DESIRED_QUANTITY] == 10.0
+
+
+@pytest.mark.asyncio
+async def test_below_threshold_includes_quantity_needed_legacy(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    """Test below_threshold uses legacy formula when desired_quantity is 0."""
+    mock_repository.list_items_with_details = AsyncMock(
+        return_value=[
+            {
+                "name": "Bacon",
+                "quantity": 2,
+                "auto_add_to_list_quantity": 5,
+                "desired_quantity": 0,
+                "category": "",
+                "location": "",
+                "locations": [],
+                "unit": "",
+            },
+        ]
+    )
+
+    with patch.object(coordinator, "async_get_items_expiring_soon", new=AsyncMock(return_value=[])):
+        stats = await coordinator.async_get_inventory_statistics("kitchen_123")
+
+    assert len(stats["below_threshold"]) == 1
+    entry = stats["below_threshold"][0]
+    assert entry["name"] == "Bacon"
+    assert entry["quantity"] == 2
+    assert entry["threshold"] == 5
+    assert entry["desired_quantity"] == 0
+    # Legacy: 5 - 2 + 1 = 4
+    assert entry["quantity_needed"] == 4
+
+
+@pytest.mark.asyncio
+async def test_below_threshold_includes_quantity_needed_desired(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    """Test below_threshold uses desired_quantity formula when desired_quantity > 0."""
+    mock_repository.list_items_with_details = AsyncMock(
+        return_value=[
+            {
+                "name": "Bacon",
+                "quantity": 2,
+                "auto_add_to_list_quantity": 3,
+                "desired_quantity": 10,
+                "category": "",
+                "location": "",
+                "locations": [],
+                "unit": "",
+            },
+        ]
+    )
+
+    with patch.object(coordinator, "async_get_items_expiring_soon", new=AsyncMock(return_value=[])):
+        stats = await coordinator.async_get_inventory_statistics("kitchen_123")
+
+    assert len(stats["below_threshold"]) == 1
+    entry = stats["below_threshold"][0]
+    assert entry["name"] == "Bacon"
+    assert entry["quantity"] == 2
+    assert entry["threshold"] == 3
+    assert entry["desired_quantity"] == 10
+    # Desired: 10 - 2 = 8
+    assert entry["quantity_needed"] == 8
+
+
+@pytest.mark.asyncio
+async def test_async_add_item_passes_todo_quantity_placement(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    """Test async_add_item passes todo_quantity_placement through to repository."""
+    mock_repository.create_item.reset_mock()
+
+    with patch.object(EventBus, "async_fire"):
+        item_id = await coordinator.async_add_item(
+            "kitchen_123",
+            name="Milk",
+            quantity=2,
+            todo_quantity_placement="description",
+        )
+
+    assert item_id == "new-item-id"
+    assert mock_repository.create_item.await_count == 1
+
+    _, args, _ = mock_repository.create_item.mock_calls[0]
+    payload = args[1]
+    assert payload[FIELD_TODO_QUANTITY_PLACEMENT] == "description"
+
+
+@pytest.mark.asyncio
+async def test_async_add_item_defaults_todo_quantity_placement_to_name(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    """Test async_add_item defaults todo_quantity_placement to 'name'."""
+    mock_repository.create_item.reset_mock()
+
+    with patch.object(EventBus, "async_fire"):
+        await coordinator.async_add_item(
+            "kitchen_123",
+            name="Bread",
+            quantity=1,
+        )
+
+    _, args, _ = mock_repository.create_item.mock_calls[0]
+    payload = args[1]
+    assert payload[FIELD_TODO_QUANTITY_PLACEMENT] == "name"
+
+
+# ---------------------------------------------------------------------------
+# Barcode tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_add_item_with_barcode(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.create_item.reset_mock()
+
+    with patch.object(EventBus, "async_fire"):
+        item_id = await coordinator.async_add_item(
+            "kitchen_123",
+            name="Milk",
+            quantity=2,
+            barcode="123456789012",
+        )
+
+    assert item_id == "new-item-id"
+    mock_repository.add_item_barcode.assert_awaited_once_with(
+        "new-item-id", "kitchen_123", "123456789012"
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_add_item_without_barcode_skips_barcode(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.create_item.reset_mock()
+
+    with patch.object(EventBus, "async_fire"):
+        await coordinator.async_add_item(
+            "kitchen_123",
+            name="Bread",
+            quantity=1,
+        )
+
+    mock_repository.add_item_barcode.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_item_name_with_name(
+    coordinator: SimpleInventoryCoordinator,
+) -> None:
+    result = await coordinator._resolve_item_name("kitchen_123", "milk", None)
+    assert result == "milk"
+
+
+@pytest.mark.asyncio
+async def test_resolve_item_name_with_barcode(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode = AsyncMock(return_value={"id": "item1", "name": "Milk"})
+
+    result = await coordinator._resolve_item_name("kitchen_123", None, "BC-123")
+    assert result == "Milk"
+    mock_repository.get_item_by_barcode.assert_awaited_once_with("kitchen_123", "BC-123")
+
+
+@pytest.mark.asyncio
+async def test_resolve_item_name_barcode_not_found(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode = AsyncMock(return_value=None)
+
+    with pytest.raises(ValueError, match="No item found for barcode"):
+        await coordinator._resolve_item_name("kitchen_123", None, "MISSING")
+
+
+@pytest.mark.asyncio
+async def test_resolve_item_name_neither(
+    coordinator: SimpleInventoryCoordinator,
+) -> None:
+    with pytest.raises(ValueError, match="Either 'name' or 'barcode' is required"):
+        await coordinator._resolve_item_name("kitchen_123", None, None)
+
+
+@pytest.mark.asyncio
+async def test_resolve_item_name_empty_strings(
+    coordinator: SimpleInventoryCoordinator,
+) -> None:
+    with pytest.raises(ValueError, match="Either 'name' or 'barcode' is required"):
+        await coordinator._resolve_item_name("kitchen_123", "", "")
+
+
+@pytest.mark.asyncio
+async def test_async_increment_item_by_barcode(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode = AsyncMock(return_value={"id": "milk-id", "name": "Milk"})
+    mock_repository.get_item_by_name = AsyncMock(return_value={"id": "milk-id", "quantity": 2})
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_increment_item("kitchen_123", barcode="BC-MILK", amount=3)
+
+    assert ok is True
+    mock_repository.get_item_by_barcode.assert_awaited_once_with("kitchen_123", "BC-MILK")
+    mock_repository.update_item.assert_awaited_once_with("milk-id", {FIELD_QUANTITY: 5})
+
+
+@pytest.mark.asyncio
+async def test_async_decrement_item_by_barcode(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode = AsyncMock(return_value={"id": "milk-id", "name": "Milk"})
+    mock_repository.get_item_by_name = AsyncMock(return_value={"id": "milk-id", "quantity": 5})
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_decrement_item("kitchen_123", barcode="BC-MILK", amount=2)
+
+    assert ok is True
+    mock_repository.update_item.assert_awaited_once_with("milk-id", {FIELD_QUANTITY: 3})
+
+
+@pytest.mark.asyncio
+async def test_async_remove_item_by_barcode(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode = AsyncMock(return_value={"id": "milk-id", "name": "Milk"})
+    mock_repository.get_item_by_name = AsyncMock(return_value={"id": "milk-id", "name": "Milk"})
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_remove_item("kitchen_123", barcode="BC-MILK")
+
+    assert ok is True
+    mock_repository.delete_item.assert_awaited_once_with("milk-id")
+
+
+@pytest.mark.asyncio
+async def test_apply_location_updates(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.ensure_location = AsyncMock(side_effect=[1, 2])
+
+    with patch.object(EventBus, "async_fire"):
+        await coordinator._apply_location_updates(
+            "kitchen_123",
+            "item-1",
+            "Fridge, Pantry",
+        )
+
+    mock_repository.set_item_locations.assert_awaited_once()
+    loc_ids = mock_repository.set_item_locations.call_args[0][1]
+    assert loc_ids == [1, 2]
+
+
+# --- Feature 2: History recording tests ---
+
+
+@pytest.mark.asyncio
+async def test_adjust_quantity_records_history(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 5}
+    )
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_increment_item("kitchen_123", "Milk", 2)
+
+    assert ok is True
+    mock_repository.record_history_event.assert_awaited_once()
+    call_kwargs = mock_repository.record_history_event.call_args.kwargs
+    assert call_kwargs["event_type"] == "increment"
+    assert call_kwargs["amount"] == 2
+    assert call_kwargs["quantity_before"] == 5
+    assert call_kwargs["quantity_after"] == 7
+
+
+@pytest.mark.asyncio
+async def test_add_item_records_history(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.create_item.reset_mock()
+
+    with patch.object(EventBus, "async_fire"):
+        item_id = await coordinator.async_add_item("kitchen_123", name="Apple", quantity=3)
+
+    assert item_id is not None
+    mock_repository.record_history_event.assert_awaited()
+    call_kwargs = mock_repository.record_history_event.call_args.kwargs
+    assert call_kwargs["event_type"] == "add"
+    assert call_kwargs["quantity_after"] == 3
+
+
+@pytest.mark.asyncio
+async def test_remove_item_records_history(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 5}
+    )
+
+    with patch.object(EventBus, "async_fire"):
+        ok = await coordinator.async_remove_item("kitchen_123", "Milk")
+
+    assert ok is True
+    mock_repository.record_history_event.assert_awaited_once()
+    call_kwargs = mock_repository.record_history_event.call_args.kwargs
+    assert call_kwargs["event_type"] == "remove"
+    assert call_kwargs["quantity_before"] == 5
+    assert call_kwargs["quantity_after"] == 0
+
+
+# --- Feature 4: Import/Export tests ---
+
+
+@pytest.mark.asyncio
+async def test_export_json(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.fetch_inventory = AsyncMock(
+        return_value={"id": "kitchen_123", "name": "Kitchen", "description": ""}
+    )
+
+    result = await coordinator.async_export_inventory("kitchen_123", "json")
+    assert isinstance(result, dict)
+    assert result["version"] == "1.0"
+    assert "items" in result
+    assert "exported_at" in result
+
+
+@pytest.mark.asyncio
+async def test_export_csv(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.fetch_inventory = AsyncMock(
+        return_value={"id": "kitchen_123", "name": "Kitchen", "description": ""}
+    )
+
+    result = await coordinator.async_export_inventory("kitchen_123", "csv")
+    assert isinstance(result, str)
+    assert "name" in result  # CSV header
+
+
+@pytest.mark.asyncio
+async def test_import_json_skip(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "existing", "name": "Milk", "quantity": 5}
+    )
+
+    data = {"items": [{"name": "Milk", "quantity": 3}]}
+
+    with patch.object(EventBus, "async_fire"):
+        summary = await coordinator.async_import_inventory("kitchen_123", data, "json", "skip")
+
+    assert summary["skipped"] == 1
+    assert summary["added"] == 0
+
+
+@pytest.mark.asyncio
+async def test_import_json_overwrite(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "existing", "name": "Milk", "quantity": 5}
+    )
+
+    data = {"items": [{"name": "Milk", "quantity": 10}]}
+
+    with patch.object(EventBus, "async_fire"):
+        summary = await coordinator.async_import_inventory("kitchen_123", data, "json", "overwrite")
+
+    assert summary["updated"] == 1
+    mock_repository.update_item.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_import_json_merge_quantities(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "existing", "name": "Milk", "quantity": 5}
+    )
+
+    data = {"items": [{"name": "Milk", "quantity": 3}]}
+
+    with patch.object(EventBus, "async_fire"):
+        summary = await coordinator.async_import_inventory(
+            "kitchen_123", data, "json", "merge_quantities"
+        )
+
+    assert summary["updated"] == 1
+    mock_repository.update_item.assert_awaited_once()
+    update_args = mock_repository.update_item.call_args
+    assert update_args[0][1]["quantity"] == 8  # 5 + 3
+
+
+@pytest.mark.asyncio
+async def test_import_new_item(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(return_value=None)
+    mock_repository.create_item.reset_mock()
+
+    data = {"items": [{"name": "NewItem", "quantity": 7}]}
+
+    with patch.object(EventBus, "async_fire"):
+        summary = await coordinator.async_import_inventory("kitchen_123", data, "json", "skip")
+
+    assert summary["added"] == 1
+    mock_repository.create_item.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_csv_round_trip(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    items = [
+        {
+            "name": "Milk",
+            "description": "Fresh",
+            "quantity": 3,
+            "unit": "gallons",
+            "location": "Fridge",
+            "category": "Dairy",
+            "locations": ["Fridge"],
+            "categories": ["Dairy"],
+            "barcodes": ["123"],
+            "expiry_date": "2025-12-31",
+            "expiry_alert_days": 7,
+            "auto_add_enabled": True,
+            "auto_add_to_list_quantity": 1,
+            "desired_quantity": 5,
+            "todo_list": "todo.shopping",
+        }
+    ]
+    csv_str = coordinator._items_to_csv(items)
+    parsed = coordinator._csv_to_items(csv_str)
+
+    assert len(parsed) == 1
+    assert parsed[0]["name"] == "Milk"
+    assert parsed[0]["quantity"] == 3.0
+    assert parsed[0]["unit"] == "gallons"

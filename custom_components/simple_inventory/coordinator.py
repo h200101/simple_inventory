@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Callable
@@ -14,24 +16,29 @@ from .const import (
     DEFAULT_AUTO_ADD_ENABLED,
     DEFAULT_AUTO_ADD_TO_LIST_QUANTITY,
     DEFAULT_CATEGORY,
+    DEFAULT_DESIRED_QUANTITY,
     DEFAULT_EXPIRY_ALERT_DAYS,
     DEFAULT_EXPIRY_DATE,
     DEFAULT_LOCATION,
     DEFAULT_QUANTITY,
     DEFAULT_TODO_LIST,
+    DEFAULT_TODO_QUANTITY_PLACEMENT,
     DEFAULT_UNIT,
     DOMAIN,
     FIELD_AUTO_ADD_ENABLED,
     FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED,
     FIELD_AUTO_ADD_TO_LIST_QUANTITY,
+    FIELD_BARCODE,
     FIELD_CATEGORY,
     FIELD_DESCRIPTION,
+    FIELD_DESIRED_QUANTITY,
     FIELD_EXPIRY_ALERT_DAYS,
     FIELD_EXPIRY_DATE,
     FIELD_LOCATION,
     FIELD_NAME,
     FIELD_QUANTITY,
     FIELD_TODO_LIST,
+    FIELD_TODO_QUANTITY_PLACEMENT,
     FIELD_UNIT,
 )
 from .storage.repository import InventoryRepository
@@ -43,9 +50,12 @@ class SimpleInventoryCoordinator:
     """Facade around the SQLite repository with HA signaling."""
 
     _INTEGER_FIELDS = {
+        FIELD_EXPIRY_ALERT_DAYS,
+    }
+    _NUMERIC_FIELDS = {
         FIELD_QUANTITY,
         FIELD_AUTO_ADD_TO_LIST_QUANTITY,
-        FIELD_EXPIRY_ALERT_DAYS,
+        FIELD_DESIRED_QUANTITY,
     }
     _BOOLEAN_FIELDS = {
         FIELD_AUTO_ADD_ENABLED,
@@ -57,6 +67,7 @@ class SimpleInventoryCoordinator:
         FIELD_DESCRIPTION,
         FIELD_EXPIRY_DATE,
         FIELD_TODO_LIST,
+        FIELD_TODO_QUANTITY_PLACEMENT,
         FIELD_LOCATION,
     }
 
@@ -109,11 +120,11 @@ class SimpleInventoryCoordinator:
 
         name = kwargs.get(FIELD_NAME)
         cleaned_name = self._validate_and_clean_name(str(name) if name else "", "add", inventory_id)
-        quantity = max(0, int(kwargs.get(FIELD_QUANTITY, DEFAULT_QUANTITY)))
+        quantity = max(0, float(kwargs.get(FIELD_QUANTITY, DEFAULT_QUANTITY)))
 
         auto_add_quantity = max(
             0,
-            int(kwargs.get(FIELD_AUTO_ADD_TO_LIST_QUANTITY, DEFAULT_AUTO_ADD_TO_LIST_QUANTITY)),
+            float(kwargs.get(FIELD_AUTO_ADD_TO_LIST_QUANTITY, DEFAULT_AUTO_ADD_TO_LIST_QUANTITY)),
         )
         auto_add_enabled = bool(kwargs.get(FIELD_AUTO_ADD_ENABLED, DEFAULT_AUTO_ADD_ENABLED))
         auto_add_id_enabled = bool(kwargs.get(FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED, False))
@@ -143,18 +154,37 @@ class SimpleInventoryCoordinator:
             FIELD_AUTO_ADD_ENABLED: auto_add_enabled,
             FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED: auto_add_id_enabled,
             FIELD_AUTO_ADD_TO_LIST_QUANTITY: auto_add_quantity,
+            FIELD_DESIRED_QUANTITY: max(
+                0,
+                float(kwargs.get(FIELD_DESIRED_QUANTITY, DEFAULT_DESIRED_QUANTITY)),
+            ),
             FIELD_TODO_LIST: todo_list,
+            FIELD_TODO_QUANTITY_PLACEMENT: kwargs.get(
+                FIELD_TODO_QUANTITY_PLACEMENT, DEFAULT_TODO_QUANTITY_PLACEMENT
+            ),
         }
 
         item_id = await self.repository.create_item(inventory_id, item_payload)
+
+        barcode = kwargs.get(FIELD_BARCODE)
+        if barcode and barcode.strip():
+            await self.repository.add_item_barcode(item_id, inventory_id, barcode.strip())
 
         await self._apply_location_updates(
             inventory_id,
             item_id,
             kwargs.get(FIELD_LOCATION, DEFAULT_LOCATION),
-            quantity,
         )
         await self._apply_category_updates(item_id, kwargs.get(FIELD_CATEGORY, DEFAULT_CATEGORY))
+
+        await self.repository.record_history_event(
+            item_id=item_id,
+            inventory_id=inventory_id,
+            event_type="add",
+            amount=quantity,
+            quantity_before=0,
+            quantity_after=quantity,
+        )
 
         await self._after_change(inventory_id)
         return item_id
@@ -164,15 +194,20 @@ class SimpleInventoryCoordinator:
         inventory_id: str,
         old_name: str,
         new_name: str,
+        *,
+        barcode: str | None = None,
         **kwargs: Any,
     ) -> bool:
         """Update an existing item."""
         await self.async_initialize()
 
-        item = await self.repository.get_item_by_name(inventory_id, old_name)
+        resolved_old_name = await self._resolve_item_name(inventory_id, old_name, barcode)
+        item = await self.repository.get_item_by_name(inventory_id, resolved_old_name)
         if not item:
             _LOGGER.warning(
-                "Cannot update non-existent item '%s' in inventory '%s'", old_name, inventory_id
+                "Cannot update non-existent item '%s' in inventory '%s'",
+                resolved_old_name,
+                inventory_id,
             )
             return False
 
@@ -205,7 +240,6 @@ class SimpleInventoryCoordinator:
                 inventory_id,
                 item["id"],
                 kwargs.get(FIELD_LOCATION, DEFAULT_LOCATION),
-                payload.get(FIELD_QUANTITY, item.get(FIELD_QUANTITY, 0)),
             )
 
         if FIELD_CATEGORY in kwargs:
@@ -213,14 +247,20 @@ class SimpleInventoryCoordinator:
                 item["id"], kwargs.get(FIELD_CATEGORY, DEFAULT_CATEGORY)
             )
 
+        if barcode and barcode.strip():
+            await self.repository.add_item_barcode(item["id"], inventory_id, barcode.strip())
+
         await self._after_change(inventory_id)
         return True
 
-    async def async_remove_item(self, inventory_id: str, name: str) -> bool:
+    async def async_remove_item(
+        self, inventory_id: str, name: str | None = None, *, barcode: str | None = None
+    ) -> bool:
         """Remove an item."""
         await self.async_initialize()
 
-        cleaned_name = self._validate_and_clean_name(name, "remove", inventory_id)
+        resolved_name = await self._resolve_item_name(inventory_id, name, barcode)
+        cleaned_name = self._validate_and_clean_name(resolved_name, "remove", inventory_id)
         item = await self.repository.get_item_by_name(inventory_id, cleaned_name)
         if not item:
             _LOGGER.warning(
@@ -230,12 +270,28 @@ class SimpleInventoryCoordinator:
             )
             return False
 
+        qty_before = float(item.get(FIELD_QUANTITY, 0))
         removed = await self.repository.delete_item(item["id"])
         if removed:
+            await self.repository.record_history_event(
+                item_id=item["id"],
+                inventory_id=inventory_id,
+                event_type="remove",
+                amount=qty_before,
+                quantity_before=qty_before,
+                quantity_after=0,
+            )
             await self._after_change(inventory_id)
         return removed
 
-    async def async_increment_item(self, inventory_id: str, name: str, amount: int = 1) -> bool:
+    async def async_increment_item(
+        self,
+        inventory_id: str,
+        name: str | None = None,
+        amount: float = 1,
+        *,
+        barcode: str | None = None,
+    ) -> bool:
         """Increment quantity."""
         if amount < 0:
             _LOGGER.warning(
@@ -245,9 +301,17 @@ class SimpleInventoryCoordinator:
             )
             return False
 
-        return await self._adjust_quantity(inventory_id, name, amount)
+        resolved_name = await self._resolve_item_name(inventory_id, name, barcode)
+        return await self._adjust_quantity(inventory_id, resolved_name, amount)
 
-    async def async_decrement_item(self, inventory_id: str, name: str, amount: int = 1) -> bool:
+    async def async_decrement_item(
+        self,
+        inventory_id: str,
+        name: str | None = None,
+        amount: float = 1,
+        *,
+        barcode: str | None = None,
+    ) -> bool:
         """Decrement quantity."""
         if amount < 0:
             _LOGGER.warning(
@@ -257,7 +321,8 @@ class SimpleInventoryCoordinator:
             )
             return False
 
-        return await self._adjust_quantity(inventory_id, name, -amount)
+        resolved_name = await self._resolve_item_name(inventory_id, name, barcode)
+        return await self._adjust_quantity(inventory_id, resolved_name, -amount)
 
     async def async_get_item(self, inventory_id: str, name: str) -> dict[str, Any] | None:
         """Return item data by name."""
@@ -274,21 +339,28 @@ class SimpleInventoryCoordinator:
         items = await self.async_list_items(inventory_id)
 
         total_items = len(items)
-        total_quantity = sum(int(item.get(FIELD_QUANTITY, DEFAULT_QUANTITY)) for item in items)
+        total_quantity = sum(float(item.get(FIELD_QUANTITY, DEFAULT_QUANTITY)) for item in items)
 
         categories = self._group_items_by_field(items, FIELD_CATEGORY, DEFAULT_CATEGORY)
         locations = self._group_location_counts(items)
 
         below_threshold = []
         for item in items:
-            quantity = int(item.get(FIELD_QUANTITY, 0))
-            threshold = int(item.get(FIELD_AUTO_ADD_TO_LIST_QUANTITY, 0))
+            quantity = float(item.get(FIELD_QUANTITY, 0))
+            threshold = float(item.get(FIELD_AUTO_ADD_TO_LIST_QUANTITY, 0))
             if threshold > 0 and quantity <= threshold:
+                desired = float(item.get(FIELD_DESIRED_QUANTITY, DEFAULT_DESIRED_QUANTITY))
+                if desired > 0:
+                    quantity_needed = desired - quantity
+                else:
+                    quantity_needed = threshold - quantity + 1
                 below_threshold.append(
                     {
                         FIELD_NAME: item.get(FIELD_NAME),
                         FIELD_QUANTITY: quantity,
                         "threshold": threshold,
+                        FIELD_DESIRED_QUANTITY: desired,
+                        "quantity_needed": quantity_needed,
                         FIELD_UNIT: item.get(FIELD_UNIT, DEFAULT_UNIT),
                         FIELD_CATEGORY: item.get(FIELD_CATEGORY, DEFAULT_CATEGORY),
                     }
@@ -326,7 +398,7 @@ class SimpleInventoryCoordinator:
             for item in items:
                 expiry_str = item.get(FIELD_EXPIRY_DATE, "")
                 threshold = int(item.get(FIELD_EXPIRY_ALERT_DAYS, DEFAULT_EXPIRY_ALERT_DAYS))
-                quantity = int(item.get(FIELD_QUANTITY, DEFAULT_QUANTITY))
+                quantity = float(item.get(FIELD_QUANTITY, DEFAULT_QUANTITY))
 
                 if not expiry_str or not threshold or quantity <= 0:
                     continue
@@ -353,6 +425,289 @@ class SimpleInventoryCoordinator:
 
         expiring.sort(key=lambda entry: entry["days_until_expiry"])
         return expiring
+
+    async def async_get_item_history(
+        self,
+        inventory_id: str,
+        name: str,
+        *,
+        event_type: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Return history events for a specific item."""
+        await self.async_initialize()
+        item = await self.repository.get_item_by_name(inventory_id, name)
+        if not item:
+            return []
+        return await self.repository.get_item_history(
+            item["id"],
+            event_type=event_type,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def async_get_inventory_history(
+        self,
+        inventory_id: str,
+        *,
+        event_type: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Return history events for an inventory."""
+        await self.async_initialize()
+        return await self.repository.get_inventory_history(
+            inventory_id,
+            event_type=event_type,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def async_export_inventory(
+        self,
+        inventory_id: str,
+        fmt: str = "json",
+    ) -> dict[str, Any] | str:
+        """Export inventory data as JSON dict or CSV string."""
+        await self.async_initialize()
+        inventory = await self.repository.fetch_inventory(inventory_id)
+        if not inventory:
+            raise ValueError(f"Inventory '{inventory_id}' not found")
+
+        items = await self.async_list_items(inventory_id)
+        exported_at = datetime.utcnow().isoformat()
+
+        if fmt == "csv":
+            return self._items_to_csv(items)
+
+        return {
+            "version": "1.0",
+            "exported_at": exported_at,
+            "inventory": {
+                "id": inventory.get("id"),
+                "name": inventory.get("name"),
+                "description": inventory.get("description", ""),
+            },
+            "items": items,
+        }
+
+    async def async_import_inventory(
+        self,
+        inventory_id: str,
+        data: Any,
+        fmt: str = "json",
+        merge_strategy: str = "skip",
+    ) -> dict[str, Any]:
+        """Import items into an inventory.
+
+        merge_strategy: skip | overwrite | merge_quantities
+        Returns summary: {added, updated, skipped, errors}
+        """
+        await self.async_initialize()
+
+        if fmt == "csv":
+            items_to_import = self._csv_to_items(data)
+        elif isinstance(data, dict):
+            items_to_import = data.get("items", [])
+        elif isinstance(data, list):
+            items_to_import = data
+        else:
+            return {"added": 0, "updated": 0, "skipped": 0, "errors": ["Invalid data format"]}
+
+        added = 0
+        updated = 0
+        skipped = 0
+        errors: list[str] = []
+
+        for item_data in items_to_import:
+            try:
+                name = item_data.get(FIELD_NAME, "")
+                if not name or not name.strip():
+                    errors.append("Item missing name, skipped")
+                    continue
+
+                existing = await self.repository.get_item_by_name(inventory_id, name.strip())
+
+                if existing and merge_strategy == "skip":
+                    skipped += 1
+                    continue
+
+                if existing and merge_strategy == "merge_quantities":
+                    new_qty = float(existing.get(FIELD_QUANTITY, 0)) + float(
+                        item_data.get(FIELD_QUANTITY, 0)
+                    )
+                    await self.repository.update_item(existing["id"], {FIELD_QUANTITY: new_qty})
+                    await self.repository.record_history_event(
+                        item_id=existing["id"],
+                        inventory_id=inventory_id,
+                        event_type="import",
+                        amount=float(item_data.get(FIELD_QUANTITY, 0)),
+                        quantity_before=float(existing.get(FIELD_QUANTITY, 0)),
+                        quantity_after=new_qty,
+                        source="import",
+                    )
+                    updated += 1
+                    continue
+
+                if existing and merge_strategy == "overwrite":
+                    payload = self._build_import_payload(item_data)
+                    await self.repository.update_item(existing["id"], payload)
+                    qty_before = float(existing.get(FIELD_QUANTITY, 0))
+                    qty_after = float(payload.get(FIELD_QUANTITY, qty_before))
+                    await self.repository.record_history_event(
+                        item_id=existing["id"],
+                        inventory_id=inventory_id,
+                        event_type="import",
+                        amount=qty_after,
+                        quantity_before=qty_before,
+                        quantity_after=qty_after,
+                        source="import",
+                    )
+
+                    if FIELD_LOCATION in item_data and item_data[FIELD_LOCATION]:
+                        await self._apply_location_updates(
+                            inventory_id,
+                            existing["id"],
+                            item_data[FIELD_LOCATION],
+                        )
+                    if FIELD_CATEGORY in item_data and item_data[FIELD_CATEGORY]:
+                        await self._apply_category_updates(
+                            existing["id"], item_data[FIELD_CATEGORY]
+                        )
+
+                    updated += 1
+                    continue
+
+                # New item
+                payload = self._build_import_payload(item_data)
+                item_id = await self.repository.create_item(inventory_id, payload)
+                qty = float(payload.get(FIELD_QUANTITY, 0))
+                await self.repository.record_history_event(
+                    item_id=item_id,
+                    inventory_id=inventory_id,
+                    event_type="import",
+                    amount=qty,
+                    quantity_before=0,
+                    quantity_after=qty,
+                    source="import",
+                )
+
+                if FIELD_LOCATION in item_data and item_data[FIELD_LOCATION]:
+                    await self._apply_location_updates(
+                        inventory_id, item_id, item_data[FIELD_LOCATION]
+                    )
+                if FIELD_CATEGORY in item_data and item_data[FIELD_CATEGORY]:
+                    await self._apply_category_updates(item_id, item_data[FIELD_CATEGORY])
+
+                added += 1
+
+            except Exception as exc:
+                errors.append(f"Error importing '{item_data.get(FIELD_NAME, '?')}': {exc}")
+
+        if added or updated:
+            await self._after_change(inventory_id)
+
+        return {"added": added, "updated": updated, "skipped": skipped, "errors": errors}
+
+    def _build_import_payload(self, item_data: dict[str, Any]) -> dict[str, Any]:
+        """Build a clean item payload from imported data."""
+        return {
+            FIELD_NAME: str(item_data.get(FIELD_NAME, "")).strip(),
+            FIELD_DESCRIPTION: str(item_data.get(FIELD_DESCRIPTION, "")),
+            FIELD_QUANTITY: float(item_data.get(FIELD_QUANTITY, 0)),
+            FIELD_UNIT: str(item_data.get(FIELD_UNIT, DEFAULT_UNIT)),
+            FIELD_EXPIRY_DATE: str(item_data.get(FIELD_EXPIRY_DATE, DEFAULT_EXPIRY_DATE)),
+            FIELD_EXPIRY_ALERT_DAYS: int(
+                item_data.get(FIELD_EXPIRY_ALERT_DAYS, DEFAULT_EXPIRY_ALERT_DAYS)
+            ),
+            FIELD_AUTO_ADD_ENABLED: bool(
+                item_data.get(FIELD_AUTO_ADD_ENABLED, DEFAULT_AUTO_ADD_ENABLED)
+            ),
+            FIELD_AUTO_ADD_TO_LIST_QUANTITY: float(
+                item_data.get(FIELD_AUTO_ADD_TO_LIST_QUANTITY, DEFAULT_AUTO_ADD_TO_LIST_QUANTITY)
+            ),
+            FIELD_DESIRED_QUANTITY: float(
+                item_data.get(FIELD_DESIRED_QUANTITY, DEFAULT_DESIRED_QUANTITY)
+            ),
+            FIELD_TODO_LIST: str(item_data.get(FIELD_TODO_LIST, DEFAULT_TODO_LIST)),
+            FIELD_TODO_QUANTITY_PLACEMENT: str(
+                item_data.get(FIELD_TODO_QUANTITY_PLACEMENT, DEFAULT_TODO_QUANTITY_PLACEMENT)
+            ),
+        }
+
+    def _items_to_csv(self, items: list[dict[str, Any]]) -> str:
+        """Convert items list to a CSV string."""
+        output = io.StringIO()
+        fieldnames = [
+            "name",
+            "description",
+            "quantity",
+            "unit",
+            "location",
+            "category",
+            "expiry_date",
+            "expiry_alert_days",
+            "auto_add_enabled",
+            "auto_add_to_list_quantity",
+            "desired_quantity",
+            "todo_list",
+            "barcodes",
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+
+        for item in items:
+            row = {
+                "name": item.get(FIELD_NAME, ""),
+                "description": item.get(FIELD_DESCRIPTION, ""),
+                "quantity": item.get(FIELD_QUANTITY, 0),
+                "unit": item.get(FIELD_UNIT, ""),
+                "location": ", ".join(item.get("locations", [])) or item.get(FIELD_LOCATION, ""),
+                "category": ", ".join(item.get("categories", [])) or item.get(FIELD_CATEGORY, ""),
+                "expiry_date": item.get(FIELD_EXPIRY_DATE, ""),
+                "expiry_alert_days": item.get(FIELD_EXPIRY_ALERT_DAYS, 0),
+                "auto_add_enabled": int(item.get(FIELD_AUTO_ADD_ENABLED, False)),
+                "auto_add_to_list_quantity": item.get(FIELD_AUTO_ADD_TO_LIST_QUANTITY, 0),
+                "desired_quantity": item.get(FIELD_DESIRED_QUANTITY, 0),
+                "todo_list": item.get(FIELD_TODO_LIST, ""),
+                "barcodes": ", ".join(item.get("barcodes", [])),
+            }
+            writer.writerow(row)
+
+        return output.getvalue()
+
+    def _csv_to_items(self, csv_string: str) -> list[dict[str, Any]]:
+        """Parse a CSV string into a list of item dicts."""
+        reader = csv.DictReader(io.StringIO(csv_string))
+        items: list[dict[str, Any]] = []
+        for row in reader:
+            item: dict[str, Any] = {
+                FIELD_NAME: row.get("name", ""),
+                FIELD_DESCRIPTION: row.get("description", ""),
+                FIELD_QUANTITY: float(row.get("quantity", 0) or 0),
+                FIELD_UNIT: row.get("unit", ""),
+                FIELD_LOCATION: row.get("location", ""),
+                FIELD_CATEGORY: row.get("category", ""),
+                FIELD_EXPIRY_DATE: row.get("expiry_date", ""),
+                FIELD_EXPIRY_ALERT_DAYS: int(row.get("expiry_alert_days", 0) or 0),
+                FIELD_AUTO_ADD_ENABLED: bool(int(row.get("auto_add_enabled", 0) or 0)),
+                FIELD_AUTO_ADD_TO_LIST_QUANTITY: float(
+                    row.get("auto_add_to_list_quantity", 0) or 0
+                ),
+                FIELD_DESIRED_QUANTITY: float(row.get("desired_quantity", 0) or 0),
+                FIELD_TODO_LIST: row.get("todo_list", ""),
+            }
+            items.append(item)
+        return items
 
     def get_data(self) -> dict[str, Any]:
         """Legacy compatibility stub (returns empty data structure)."""
@@ -385,7 +740,34 @@ class SimpleInventoryCoordinator:
 
     # Internal helpers -----------------------------------------------------
 
-    async def _adjust_quantity(self, inventory_id: str, name: str, delta: int) -> bool:
+    async def _resolve_item_name(
+        self,
+        inventory_id: str,
+        name: str | None,
+        barcode: str | None,
+    ) -> str:
+        """Resolve an item name from name or barcode.
+
+        Returns the item name. Raises ValueError if neither is provided
+        or the barcode does not match any item.
+        """
+        if name and name.strip():
+            return name.strip()
+
+        if barcode and barcode.strip():
+            item = await self.repository.get_item_by_barcode(inventory_id, barcode.strip())
+            if item is None:
+                raise ValueError(
+                    f"No item found for barcode '{barcode}' in inventory '{inventory_id}'"
+                )
+            return str(item[FIELD_NAME])
+
+        raise ValueError(
+            f"Either 'name' or 'barcode' is required to identify an item "
+            f"in inventory '{inventory_id}'"
+        )
+
+    async def _adjust_quantity(self, inventory_id: str, name: str, delta: float) -> bool:
         await self.async_initialize()
 
         cleaned_name = self._validate_and_clean_name(name, "update quantity", inventory_id)
@@ -398,9 +780,19 @@ class SimpleInventoryCoordinator:
             )
             return False
 
-        new_quantity = max(0, int(item.get(FIELD_QUANTITY, 0)) + delta)
+        qty_before = float(item.get(FIELD_QUANTITY, 0))
+        new_quantity = max(0, qty_before + delta)
         updated = await self.repository.update_item(item["id"], {FIELD_QUANTITY: new_quantity})
         if updated:
+            event_type = "increment" if delta > 0 else "decrement"
+            await self.repository.record_history_event(
+                item_id=item["id"],
+                inventory_id=inventory_id,
+                event_type=event_type,
+                amount=abs(delta),
+                quantity_before=qty_before,
+                quantity_after=new_quantity,
+            )
             await self._after_change(inventory_id)
         return updated
 
@@ -409,22 +801,37 @@ class SimpleInventoryCoordinator:
         inventory_id: str,
         item_id: str,
         location_name: str,
-        quantity: int,
     ) -> None:
         if not location_name:
             await self.repository.set_item_locations(item_id, [])
             return
 
-        location_id = await self.repository.ensure_location(inventory_id, location_name)
-        await self.repository.set_item_locations(item_id, [(location_id, quantity)])
+        names = [n.strip() for n in location_name.split(",") if n.strip()]
+        if not names:
+            await self.repository.set_item_locations(item_id, [])
+            return
+
+        loc_ids = []
+        for name in names:
+            loc_id = await self.repository.ensure_location(inventory_id, name)
+            loc_ids.append(loc_id)
+        await self.repository.set_item_locations(item_id, loc_ids)
 
     async def _apply_category_updates(self, item_id: str, category_name: str) -> None:
         if not category_name:
             await self.repository.set_item_categories(item_id, [])
             return
 
-        category_id = await self.repository.ensure_category(category_name)
-        await self.repository.set_item_categories(item_id, [category_id])
+        names = [n.strip() for n in category_name.split(",") if n.strip()]
+        if not names:
+            await self.repository.set_item_categories(item_id, [])
+            return
+
+        ids = []
+        for name in names:
+            cat_id = await self.repository.ensure_category(name)
+            ids.append(cat_id)
+        await self.repository.set_item_categories(item_id, ids)
 
     def _prepare_update_payload(
         self,
@@ -480,6 +887,8 @@ class SimpleInventoryCoordinator:
     def _process_field_value(self, field: str, value: Any) -> Any:
         if field in self._INTEGER_FIELDS:
             return max(0, int(value)) if value is not None else 0
+        if field in self._NUMERIC_FIELDS:
+            return max(0, float(value)) if value is not None else 0
         if field in self._BOOLEAN_FIELDS:
             return bool(value)
         if field in self._STRING_FIELDS:
@@ -491,7 +900,7 @@ class SimpleInventoryCoordinator:
         item_name: str,
         inventory_id: str,
         auto_add_enabled: bool,
-        auto_add_quantity: int | None,
+        auto_add_quantity: float | None,
         todo_list: str | None,
     ) -> bool:
         if not auto_add_enabled:
@@ -527,12 +936,14 @@ class SimpleInventoryCoordinator:
             FIELD_AUTO_ADD_ENABLED,
             FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED,
             FIELD_AUTO_ADD_TO_LIST_QUANTITY,
+            FIELD_DESIRED_QUANTITY,
             FIELD_CATEGORY,
             FIELD_DESCRIPTION,
             FIELD_EXPIRY_ALERT_DAYS,
             FIELD_EXPIRY_DATE,
             FIELD_QUANTITY,
             FIELD_TODO_LIST,
+            FIELD_TODO_QUANTITY_PLACEMENT,
             FIELD_UNIT,
             FIELD_LOCATION,
         }
@@ -550,6 +961,8 @@ class SimpleInventoryCoordinator:
         suffix = f" ({inventory_id})"
         if normalized.endswith(suffix):
             normalized = normalized[: -len(suffix)].rstrip()
+        elif normalized == f"({inventory_id})":
+            normalized = ""
 
         if auto_add_id_enabled:
             return f"{normalized} ({inventory_id})" if normalized else f"({inventory_id})"
@@ -581,15 +994,11 @@ class SimpleInventoryCoordinator:
         for item in items:
             loc_list = item.get("locations", [])
             if isinstance(loc_list, list) and loc_list:
-                for loc in loc_list:
-                    name = loc.get("name", DEFAULT_LOCATION)
-                    quantity = int(loc.get("quantity", 0))
-                    if not name:
-                        continue
-                    locations[name] = locations.get(name, 0) + quantity
+                for name in loc_list:
+                    if name:
+                        locations[name] = locations.get(name, 0) + 1
             else:
                 name = item.get(FIELD_LOCATION, DEFAULT_LOCATION)
                 if name:
-                    quantity = int(item.get(FIELD_QUANTITY, 0))
-                    locations[name] = locations.get(name, 0) + quantity
+                    locations[name] = locations.get(name, 0) + 1
         return locations

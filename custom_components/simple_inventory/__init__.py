@@ -33,6 +33,7 @@ from .schemas.service_schemas import (
 from .services import ServiceHandler
 from .storage.repository import InventoryRepository
 from .todo_manager import TodoManager
+from .websocket_api import async_register_websocket_commands
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -120,6 +121,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             service_handler.async_get_items_from_all_inventories,
             GET_ALL_ITEMS_SCHEMA,
         )
+
+        async_register_websocket_commands(hass)
 
         domain_data["services_registered"] = True
         domain_data["todo_manager"] = todo_manager

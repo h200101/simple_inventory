@@ -17,7 +17,6 @@ from ..types import (
     GetAllItemsServiceData,
     GetItemsServiceData,
     InventoryItem,
-    RemoveItemServiceData,
     UpdateItemServiceData,
 )
 from .base_service import BaseServiceHandler
@@ -35,11 +34,13 @@ class InventoryService(BaseServiceHandler):
         "auto_add_to_list_quantity",
         "category",
         "description",
+        "desired_quantity",
         "expiry_alert_days",
         "expiry_date",
         "location",
         "quantity",
         "todo_list",
+        "todo_quantity_placement",
         "unit",
     ]
 
@@ -101,10 +102,11 @@ class InventoryService(BaseServiceHandler):
         if coordinator is None:
             return
 
-        item_kwargs = self._extract_item_kwargs(item_data, ["inventory_id"])
+        item_kwargs = self._extract_item_kwargs(item_data, ["inventory_id", "barcode"])
+        barcode = item_data.get("barcode")
 
         try:
-            item_id = await coordinator.async_add_item(inventory_id, **item_kwargs)
+            item_id = await coordinator.async_add_item(inventory_id, barcode=barcode, **item_kwargs)
             if not item_id:
                 self._log_operation_failed("Add item", name, inventory_id)
                 return
@@ -124,29 +126,42 @@ class InventoryService(BaseServiceHandler):
             )
 
     async def async_remove_item(self, call: ServiceCall) -> None:
-        data = cast(RemoveItemServiceData, call.data)
-        inventory_id = data["inventory_id"]
-        name = data["name"]
+        inventory_id, name, barcode = self._get_inventory_name_barcode(call)
+        display_name = name or barcode or "unknown"
 
         coordinator = self._require_coordinator(inventory_id)
         if coordinator is None:
             return
 
         try:
-            item = await coordinator.async_get_item(inventory_id, name)
+            # Resolve name for todo cleanup before removal
+            resolved_name = name
+            if not resolved_name and barcode:
+                item_by_bc = await coordinator.repository.get_item_by_barcode(inventory_id, barcode)
+                if item_by_bc:
+                    resolved_name = item_by_bc.get("name")
 
-            if await coordinator.async_remove_item(inventory_id, name):
-                if item:
-                    await self.todo_manager.check_and_remove_item(name, cast(InventoryItem, item))
-
-                await self._save_and_log_success(coordinator, inventory_id, "Removed item", name)
+            if resolved_name:
+                item = await coordinator.async_get_item(inventory_id, resolved_name)
             else:
-                self._log_item_not_found("Remove item", name, inventory_id)
+                item = None
+
+            if await coordinator.async_remove_item(inventory_id, name, barcode=barcode):
+                if item and resolved_name:
+                    await self.todo_manager.check_and_remove_item(
+                        resolved_name, cast(InventoryItem, item)
+                    )
+
+                await self._save_and_log_success(
+                    coordinator, inventory_id, "Removed item", display_name
+                )
+            else:
+                self._log_item_not_found("Remove item", display_name, inventory_id)
 
         except Exception as exc:
             _LOGGER.error(
                 "Failed to remove item %s from inventory %s: %s",
-                name,
+                display_name,
                 inventory_id,
                 exc,
             )
@@ -156,6 +171,7 @@ class InventoryService(BaseServiceHandler):
         inventory_id = data["inventory_id"]
         old_name = data["old_name"]
         new_name = data["name"]
+        barcode = data.get("barcode")
 
         coordinator = self._require_coordinator(inventory_id)
         if coordinator is None:
@@ -173,6 +189,7 @@ class InventoryService(BaseServiceHandler):
                 inventory_id,
                 old_name,
                 new_name,
+                barcode=barcode,
                 **update_data,
             )
             if not updated:

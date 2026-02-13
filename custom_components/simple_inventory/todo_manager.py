@@ -12,8 +12,10 @@ from .const import (
     FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED,
     FIELD_AUTO_ADD_TO_LIST_QUANTITY,
     FIELD_DESCRIPTION,
+    FIELD_DESIRED_QUANTITY,
     FIELD_QUANTITY,
     FIELD_TODO_LIST,
+    FIELD_TODO_QUANTITY_PLACEMENT,
 )
 from .types import InventoryItem
 
@@ -138,21 +140,29 @@ class TodoManager:
             return False
 
         if require_quantity_check:
-            quantity = int(item_data.get(FIELD_QUANTITY, 0))
-            auto_add_quantity = int(
+            quantity = float(item_data.get(FIELD_QUANTITY, 0))
+            auto_add_quantity = float(
                 item_data.get(FIELD_AUTO_ADD_TO_LIST_QUANTITY, DEFAULT_AUTO_ADD_TO_LIST_QUANTITY)
             )
             return quantity <= auto_add_quantity
 
         return True
 
-    def _calculate_quantity_needed(self, quantity: int, auto_add_quantity: int) -> int:
-        """Calculate quantity needed for todo list item."""
+    def _calculate_quantity_needed(
+        self, quantity: float, auto_add_quantity: float, desired_quantity: float = 0
+    ) -> float:
+        """Calculate quantity needed for todo list item.
+
+        When desired_quantity is set, use it directly as the display amount.
+        Otherwise fall back to the legacy formula.
+        """
+        if desired_quantity > 0:
+            return desired_quantity
         return auto_add_quantity - quantity + 1
 
-    def _build_todo_item_name(self, item_name: str, quantity_needed: int) -> str:
+    def _build_todo_item_name(self, item_name: str, quantity_needed: float) -> str:
         """Build todo item name with quantity."""
-        return f"{item_name} (x{quantity_needed})"
+        return f"{item_name} (x{quantity_needed:g})"
 
     def _supports_description(self, todo_list_entity: str) -> bool:
         if todo_list_entity == "todo.shopping_list":
@@ -174,6 +184,22 @@ class TodoManager:
             return description
 
         return description
+
+    def _build_description_with_quantity(
+        self, description: str | None, quantity_needed: float
+    ) -> str:
+        """Append quantity indicator to description text."""
+        qty_str = f"(x{quantity_needed:g})"
+        if description:
+            return f"{description} {qty_str}"
+        return qty_str
+
+    def _resolve_placement(self, item_data: InventoryItem, todo_list: str) -> str:
+        """Resolve the effective placement, falling back if needed."""
+        placement = item_data.get(FIELD_TODO_QUANTITY_PLACEMENT, "name")
+        if placement == "description" and not self._supports_description(todo_list):
+            return "name"
+        return placement
 
     async def _add_todo_item(
         self, todo_list: str, item_name: str, description: str | None = None
@@ -223,22 +249,51 @@ class TodoManager:
         if not self._should_process_auto_add(item_data, require_quantity_check=True):
             return False
 
-        quantity = int(item_data.get(FIELD_QUANTITY, 0))
-        auto_add_quantity = int(
+        quantity = float(item_data.get(FIELD_QUANTITY, 0))
+        auto_add_quantity = float(
             item_data.get(FIELD_AUTO_ADD_TO_LIST_QUANTITY, DEFAULT_AUTO_ADD_TO_LIST_QUANTITY)
         )
+        desired_quantity = float(item_data.get(FIELD_DESIRED_QUANTITY, 0))
         todo_list = item_data.get(FIELD_TODO_LIST)
 
         if not todo_list:
             return False
 
+        placement = self._resolve_placement(item_data, todo_list)
         supports_description = self._supports_description(todo_list)
-        description = self._resolve_item_description(item_data) if supports_description else None
+        base_description = (
+            self._resolve_item_description(item_data) if supports_description else None
+        )
 
         try:
             matching_item = await self._find_matching_incomplete_item(todo_list, item_name)
-            quantity_needed = self._calculate_quantity_needed(quantity, auto_add_quantity)
-            new_name = self._build_todo_item_name(item_name, quantity_needed)
+
+            # Fixed quantity mode: don't add if already at/above desired,
+            # and don't update if already on the list
+            if desired_quantity > 0:
+                if quantity >= desired_quantity:
+                    return False
+                if matching_item:
+                    return True
+
+            quantity_needed = self._calculate_quantity_needed(
+                quantity, auto_add_quantity, desired_quantity
+            )
+
+            if quantity_needed <= 0:
+                return False
+
+            if placement == "name":
+                new_name = self._build_todo_item_name(item_name, quantity_needed)
+                description = base_description
+            elif placement == "description":
+                new_name = item_name
+                description = self._build_description_with_quantity(
+                    base_description, quantity_needed
+                )
+            else:  # "none"
+                new_name = item_name
+                description = base_description
 
             if matching_item:
                 await self._update_todo_item(todo_list, matching_item, new_name, description)
@@ -255,17 +310,21 @@ class TodoManager:
         if not self._should_process_auto_add(item_data, require_quantity_check=False):
             return False
 
-        quantity = int(item_data.get(FIELD_QUANTITY, 0))
-        auto_add_quantity = int(
+        quantity = float(item_data.get(FIELD_QUANTITY, 0))
+        auto_add_quantity = float(
             item_data.get(FIELD_AUTO_ADD_TO_LIST_QUANTITY, DEFAULT_AUTO_ADD_TO_LIST_QUANTITY)
         )
+        desired_quantity = float(item_data.get(FIELD_DESIRED_QUANTITY, 0))
         todo_list = item_data.get(FIELD_TODO_LIST)
 
         if not todo_list:
             return False
 
+        placement = self._resolve_placement(item_data, todo_list)
         supports_description = self._supports_description(todo_list)
-        description = self._resolve_item_description(item_data) if supports_description else None
+        base_description = (
+            self._resolve_item_description(item_data) if supports_description else None
+        )
 
         try:
             matching_item = await self._find_matching_incomplete_item(todo_list, item_name)
@@ -273,12 +332,32 @@ class TodoManager:
             if not matching_item:
                 return False
 
-            quantity_needed = self._calculate_quantity_needed(quantity, auto_add_quantity)
+            # Fixed quantity mode: remove when desired quantity is reached,
+            # otherwise leave unchanged
+            if desired_quantity > 0:
+                if quantity >= desired_quantity:
+                    await self._remove_todo_item(todo_list, matching_item)
+                    return True
+                return False
+
+            quantity_needed = self._calculate_quantity_needed(
+                quantity, auto_add_quantity, desired_quantity
+            )
 
             if quantity_needed <= 0:
                 await self._remove_todo_item(todo_list, matching_item)
             else:
-                new_name = self._build_todo_item_name(item_name, quantity_needed)
+                if placement == "name":
+                    new_name = self._build_todo_item_name(item_name, quantity_needed)
+                    description = base_description
+                elif placement == "description":
+                    new_name = item_name
+                    description = self._build_description_with_quantity(
+                        base_description, quantity_needed
+                    )
+                else:  # "none"
+                    new_name = item_name
+                    description = base_description
                 await self._update_todo_item(todo_list, matching_item, new_name, description)
 
             return True

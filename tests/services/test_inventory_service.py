@@ -88,7 +88,7 @@ class TestInventoryService:
         await inventory_service.async_remove_item(basic_service_call)
 
         mock_coordinator.async_get_item.assert_awaited_once_with("kitchen", "milk")
-        mock_coordinator.async_remove_item.assert_awaited_once_with("kitchen", "milk")
+        mock_coordinator.async_remove_item.assert_awaited_once_with("kitchen", "milk", barcode=None)
         mock_coordinator.async_save_data.assert_awaited_once_with("kitchen")
 
     @pytest.mark.asyncio
@@ -104,7 +104,7 @@ class TestInventoryService:
         with caplog.at_level(logging.WARNING):
             await inventory_service.async_remove_item(basic_service_call)
 
-        mock_coordinator.async_remove_item.assert_awaited_once_with("kitchen", "milk")
+        mock_coordinator.async_remove_item.assert_awaited_once_with("kitchen", "milk", barcode=None)
         mock_coordinator.async_save_data.assert_not_awaited()
         assert "Item not found" in caplog.text
 

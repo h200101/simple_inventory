@@ -96,6 +96,10 @@ def mock_coordinator() -> MagicMock:
 
     coordinator.async_add_listener = MagicMock(return_value=lambda: None)
 
+    mock_repo = MagicMock()
+    mock_repo.get_item_by_barcode = AsyncMock(return_value=None)
+    coordinator.repository = mock_repo
+
     return coordinator
 
 

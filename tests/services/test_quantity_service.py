@@ -31,6 +31,8 @@ def mock_coordinator() -> MagicMock:
         return_value={"quantity": 5, "auto_add_to_list_quantity": 2}
     )
     coordinator.async_save_data = AsyncMock()
+    coordinator.repository = MagicMock()
+    coordinator.repository.get_item_by_barcode = AsyncMock(return_value=None)
     return coordinator
 
 
@@ -86,7 +88,9 @@ async def test_async_increment_item_success(
 ) -> None:
     await quantity_service.async_increment_item(quantity_service_call)
 
-    mock_coordinator.async_increment_item.assert_awaited_once_with("kitchen", "milk", 2)
+    mock_coordinator.async_increment_item.assert_awaited_once_with(
+        "kitchen", "milk", 2.0, barcode=None
+    )
     mock_coordinator.async_get_item.assert_awaited_once_with("kitchen", "milk")
     mock_todo_manager.check_and_remove_item.assert_awaited_once_with(
         "milk", {"quantity": 5, "auto_add_to_list_quantity": 2}
@@ -102,7 +106,9 @@ async def test_async_increment_item_default_amount(
 ) -> None:
     await quantity_service.async_increment_item(basic_service_call)
 
-    mock_coordinator.async_increment_item.assert_awaited_once_with("kitchen", "milk", 1)
+    mock_coordinator.async_increment_item.assert_awaited_once_with(
+        "kitchen", "milk", 1.0, barcode=None
+    )
     mock_coordinator.async_save_data.assert_awaited_once_with("kitchen")
 
 
@@ -118,7 +124,9 @@ async def test_async_increment_item_not_found_logs_warning(
     with caplog.at_level(logging.WARNING):
         await quantity_service.async_increment_item(quantity_service_call)
 
-    mock_coordinator.async_increment_item.assert_awaited_once_with("kitchen", "milk", 2)
+    mock_coordinator.async_increment_item.assert_awaited_once_with(
+        "kitchen", "milk", 2.0, barcode=None
+    )
     mock_coordinator.async_save_data.assert_not_awaited()
 
     assert "Item not found" in caplog.text
@@ -149,7 +157,9 @@ async def test_async_decrement_item_success_with_todo_check(
 ) -> None:
     await quantity_service.async_decrement_item(quantity_service_call)
 
-    mock_coordinator.async_decrement_item.assert_awaited_once_with("kitchen", "milk", 2)
+    mock_coordinator.async_decrement_item.assert_awaited_once_with(
+        "kitchen", "milk", 2.0, barcode=None
+    )
     mock_coordinator.async_get_item.assert_awaited_once_with("kitchen", "milk")
     mock_todo_manager.check_and_add_item.assert_awaited_once_with(
         "milk", {"quantity": 5, "auto_add_to_list_quantity": 2}
@@ -165,7 +175,9 @@ async def test_async_decrement_item_default_amount(
 ) -> None:
     await quantity_service.async_decrement_item(basic_service_call)
 
-    mock_coordinator.async_decrement_item.assert_awaited_once_with("kitchen", "milk", 1)
+    mock_coordinator.async_decrement_item.assert_awaited_once_with(
+        "kitchen", "milk", 1.0, barcode=None
+    )
     mock_coordinator.async_save_data.assert_awaited_once_with("kitchen")
 
 
@@ -199,7 +211,9 @@ async def test_async_decrement_item_not_found_logs_warning(
     with caplog.at_level(logging.WARNING):
         await quantity_service.async_decrement_item(quantity_service_call)
 
-    mock_coordinator.async_decrement_item.assert_awaited_once_with("kitchen", "milk", 2)
+    mock_coordinator.async_decrement_item.assert_awaited_once_with(
+        "kitchen", "milk", 2.0, barcode=None
+    )
 
     mock_coordinator.async_get_item.assert_not_awaited()
     mock_todo_manager.check_and_add_item.assert_not_awaited()
@@ -256,7 +270,9 @@ async def test_increment_various_amounts(
 
     await quantity_service.async_increment_item(call)
 
-    mock_coordinator.async_increment_item.assert_awaited_once_with("kitchen", "milk", amount)
+    mock_coordinator.async_increment_item.assert_awaited_once_with(
+        "kitchen", "milk", float(amount), barcode=None
+    )
 
 
 @pytest.mark.asyncio
@@ -275,6 +291,8 @@ async def test_concurrent_decrement_operations(
         c.async_decrement_item = AsyncMock(return_value=True)
         c.async_get_item = AsyncMock(return_value={"quantity": 1, "auto_add_to_list_quantity": 2})
         c.async_save_data = AsyncMock()
+        c.repository = MagicMock()
+        c.repository.get_item_by_barcode = AsyncMock(return_value=None)
         coordinators[inv_id] = c
         hass.data[DOMAIN]["coordinators"][inv_id] = c
 
@@ -295,3 +313,48 @@ async def test_concurrent_decrement_operations(
         coordinators[inv_id].async_save_data.assert_awaited_once_with(inv_id)
 
     assert mock_todo_manager.check_and_add_item.await_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Barcode tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_increment_item_with_barcode(
+    quantity_service: QuantityService,
+    mock_coordinator: MagicMock,
+    mock_todo_manager: MagicMock,
+) -> None:
+    mock_coordinator.repository.get_item_by_barcode = AsyncMock(return_value={"name": "milk"})
+
+    call = MagicMock(spec=ServiceCall)
+    call.data = {"inventory_id": "kitchen", "barcode": "BC-123", "amount": 2}
+    call.context.id = "ctx-bc"
+
+    await quantity_service.async_increment_item(call)
+
+    mock_coordinator.async_increment_item.assert_awaited_once_with(
+        "kitchen", None, 2, barcode="BC-123"
+    )
+    mock_coordinator.async_save_data.assert_awaited_once_with("kitchen")
+
+
+@pytest.mark.asyncio
+async def test_async_decrement_item_with_barcode(
+    quantity_service: QuantityService,
+    mock_coordinator: MagicMock,
+    mock_todo_manager: MagicMock,
+) -> None:
+    mock_coordinator.repository.get_item_by_barcode = AsyncMock(return_value={"name": "milk"})
+
+    call = MagicMock(spec=ServiceCall)
+    call.data = {"inventory_id": "kitchen", "barcode": "BC-456", "amount": 1}
+    call.context.id = "ctx-bc2"
+
+    await quantity_service.async_decrement_item(call)
+
+    mock_coordinator.async_decrement_item.assert_awaited_once_with(
+        "kitchen", None, 1, barcode="BC-456"
+    )
+    mock_coordinator.async_save_data.assert_awaited_once_with("kitchen")

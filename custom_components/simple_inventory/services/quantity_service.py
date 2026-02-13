@@ -53,32 +53,45 @@ class QuantityService(BaseServiceHandler):
         self,
         call: ServiceCall,
         operation: Literal["increment", "decrement"],
-        coordinator_method: Callable[[SimpleInventoryCoordinator, str, str, int], Awaitable[bool]],
+        coordinator_method: Callable[
+            [SimpleInventoryCoordinator, str, str | None, float, str | None],
+            Awaitable[bool],
+        ],
         todo_method: Callable[[str, InventoryItem], Awaitable[bool]],
     ) -> None:
-        inventory_id, name = self._get_inventory_and_name(call)
-        amount = int(call.data.get("amount", 1))
+        inventory_id, name, barcode = self._get_inventory_name_barcode(call)
+        amount = float(call.data.get("amount", 1))
+        display_name = name or barcode or "unknown"
 
         coordinator = self._require_coordinator(inventory_id)
         if coordinator is None:
             return
 
         try:
-            if await coordinator_method(coordinator, inventory_id, name, amount):
-                item_data = await coordinator.async_get_item(inventory_id, name)
-                if item_data:
-                    await todo_method(name, cast(InventoryItem, item_data))
+            if await coordinator_method(coordinator, inventory_id, name, amount, barcode):
+                resolved_name = name
+                if not resolved_name and barcode:
+                    item_by_bc = await coordinator.repository.get_item_by_barcode(
+                        inventory_id, barcode
+                    )
+                    if item_by_bc:
+                        resolved_name = item_by_bc.get("name")
+
+                if resolved_name:
+                    item_data = await coordinator.async_get_item(inventory_id, resolved_name)
+                    if item_data:
+                        await todo_method(resolved_name, cast(InventoryItem, item_data))
 
                 await self._save_and_log_success(
                     coordinator,
                     inventory_id,
-                    f"{operation.capitalize()}ed {name} by {amount}",
-                    name,
+                    f"{operation.capitalize()}ed {display_name} by {amount}",
+                    display_name,
                 )
             else:
                 self._log_item_not_found(
                     f"{operation.capitalize()} item",
-                    name,
+                    display_name,
                     inventory_id,
                 )
 
@@ -86,7 +99,7 @@ class QuantityService(BaseServiceHandler):
             _LOGGER.error(
                 "Failed to %s item %s in inventory %s: %s",
                 operation,
-                name,
+                display_name,
                 inventory_id,
                 exc,
             )
@@ -95,8 +108,8 @@ class QuantityService(BaseServiceHandler):
         await self._handle_quantity_change(
             call,
             "increment",
-            lambda coordinator, inv_id, item_name, amt: coordinator.async_increment_item(
-                inv_id, item_name, amt
+            lambda coordinator, inv_id, item_name, amt, bc: (
+                coordinator.async_increment_item(inv_id, item_name, amt, barcode=bc)
             ),
             self.todo_manager.check_and_remove_item,
         )
@@ -105,8 +118,8 @@ class QuantityService(BaseServiceHandler):
         await self._handle_quantity_change(
             call,
             "decrement",
-            lambda coordinator, inv_id, item_name, amt: coordinator.async_decrement_item(
-                inv_id, item_name, amt
+            lambda coordinator, inv_id, item_name, amt, bc: (
+                coordinator.async_decrement_item(inv_id, item_name, amt, barcode=bc)
             ),
             self.todo_manager.check_and_add_item,
         )
