@@ -17,16 +17,15 @@ from custom_components.simple_inventory.types import AddItemServiceData
 class TestBaseServiceHandler:
     """Test BaseServiceHandler class."""
 
-    def test_init(self: Self, hass: HomeAssistant, mock_coordinator: MagicMock) -> None:
+    def test_init(self: Self, hass: HomeAssistant) -> None:
         """Test BaseServiceHandler initialization."""
         from custom_components.simple_inventory.services.base_service import (
             BaseServiceHandler,
         )
 
-        handler = BaseServiceHandler(hass, mock_coordinator)
+        handler = BaseServiceHandler(hass)
 
         assert handler.hass is hass
-        assert handler.coordinator is mock_coordinator
 
     @pytest.mark.asyncio
     async def test_save_and_log_success(
@@ -37,7 +36,9 @@ class TestBaseServiceHandler:
     ) -> None:
         """Test saving data and logging success."""
         with caplog.at_level(logging.DEBUG):
-            await base_service_handler._save_and_log_success("kitchen", "Added item", "milk")
+            await base_service_handler._save_and_log_success(
+                mock_coordinator, "kitchen", "Added item", "milk"
+            )
 
         mock_coordinator.async_save_data.assert_called_once_with("kitchen")
 
@@ -54,7 +55,7 @@ class TestBaseServiceHandler:
         """Test saving and logging with special characters in names."""
         with caplog.at_level(logging.DEBUG):
             await base_service_handler._save_and_log_success(
-                "my-pantry_01", "Updated item", "café-latte"
+                mock_coordinator, "my-pantry_01", "Updated item", "café-latte"
             )
 
         mock_coordinator.async_save_data.assert_called_once_with("my-pantry_01")
@@ -70,7 +71,9 @@ class TestBaseServiceHandler:
         mock_coordinator.async_save_data.side_effect = Exception("Save failed")
 
         with pytest.raises(Exception, match="Save failed"):
-            await base_service_handler._save_and_log_success("kitchen", "Added item", "milk")
+            await base_service_handler._save_and_log_success(
+                mock_coordinator, "kitchen", "Added item", "milk"
+            )
 
         mock_coordinator.async_save_data.assert_called_once_with("kitchen")
 
@@ -186,7 +189,9 @@ class TestBaseServiceHandler:
 
         # Create multiple concurrent save operations
         tasks = [
-            base_service_handler._save_and_log_success(f"inventory_{i}", "Operation", f"item_{i}")
+            base_service_handler._save_and_log_success(
+                mock_coordinator, f"inventory_{i}", "Operation", f"item_{i}"
+            )
             for i in range(3)
         ]
 
@@ -207,10 +212,9 @@ class TestBaseServiceHandler:
             def test_method(self: Self) -> str:
                 return "child method"
 
-        child_handler = TestChildHandler(hass, mock_coordinator)
+        child_handler = TestChildHandler(hass)
 
         assert hasattr(child_handler, "_save_and_log_success")
         assert hasattr(child_handler, "_extract_item_kwargs")
         assert child_handler.hass is hass
-        assert child_handler.coordinator is mock_coordinator
         assert child_handler.test_method() == "child method"

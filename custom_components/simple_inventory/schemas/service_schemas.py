@@ -5,6 +5,7 @@ from homeassistant.helpers import config_validation as cv
 
 from ..const import (
     DEFAULT_AUTO_ADD_TO_LIST_QUANTITY,
+    DEFAULT_DESIRED_QUANTITY,
     DEFAULT_EXPIRY_ALERT_DAYS,
     DEFAULT_QUANTITY,
 )
@@ -18,17 +19,22 @@ ITEM_SCHEMA = {
     vol.Optional("auto_add_enabled"): cv.boolean,
     vol.Optional("auto_add_id_to_description_enabled"): cv.boolean,
     vol.Optional("auto_add_to_list_quantity"): vol.All(
-        vol.Coerce(int), vol.Range(min=DEFAULT_AUTO_ADD_TO_LIST_QUANTITY)
+        vol.Coerce(float), vol.Range(min=DEFAULT_AUTO_ADD_TO_LIST_QUANTITY)
     ),
+    vol.Optional("barcode"): cv.string,
     vol.Optional("category"): cv.string,
     vol.Optional("description"): cv.string,
+    vol.Optional("desired_quantity"): vol.All(
+        vol.Coerce(float), vol.Range(min=DEFAULT_DESIRED_QUANTITY)
+    ),
     vol.Optional("expiry_alert_days"): vol.All(
         vol.Coerce(int), vol.Range(min=DEFAULT_EXPIRY_ALERT_DAYS, max=365)
     ),
     vol.Optional("expiry_date"): cv.string,
     vol.Optional("location"): cv.string,
-    vol.Optional("quantity"): vol.All(vol.Coerce(int), vol.Range(min=0)),
+    vol.Optional("quantity"): vol.All(vol.Coerce(float), vol.Range(min=0)),
     vol.Optional("todo_list"): cv.string,
+    vol.Optional("todo_quantity_placement"): vol.In(["name", "description", "none"]),
     vol.Optional("unit"): cv.string,
 }
 
@@ -36,21 +42,39 @@ ADD_ITEM_SCHEMA = vol.Schema({INVENTORY_ID: cv.string, **ITEM_SCHEMA})
 
 UPDATE_ITEM_SCHEMA = vol.Schema({INVENTORY_ID: cv.string, OLD_NAME: cv.string, **ITEM_SCHEMA})
 
+
+def _require_name_or_barcode(data: dict) -> dict:
+    """Validate that at least one of name or barcode is provided."""
+    has_name = "name" in data and data["name"]
+    has_barcode = "barcode" in data and data["barcode"]
+    if not (has_name or has_barcode):
+        raise vol.Invalid("At least one of 'name' or 'barcode' is required")
+    return data
+
+
 REMOVE_ITEM_SCHEMA = vol.Schema(
-    {
-        INVENTORY_ID: cv.string,
-        NAME: cv.string,
-    }
+    vol.All(
+        {
+            INVENTORY_ID: cv.string,
+            vol.Optional("name"): cv.string,
+            vol.Optional("barcode"): cv.string,
+        },
+        _require_name_or_barcode,
+    )
 )
 
 QUANTITY_UPDATE_SCHEMA = vol.Schema(
-    {
-        INVENTORY_ID: cv.string,
-        NAME: cv.string,
-        vol.Optional("amount", default=DEFAULT_QUANTITY): vol.All(
-            vol.Coerce(int), vol.Range(min=1)
-        ),
-    }
+    vol.All(
+        {
+            INVENTORY_ID: cv.string,
+            vol.Optional("name"): cv.string,
+            vol.Optional("barcode"): cv.string,
+            vol.Optional("amount", default=DEFAULT_QUANTITY): vol.All(
+                vol.Coerce(float), vol.Range(min=0, min_included=False)
+            ),
+        },
+        _require_name_or_barcode,
+    )
 )
 
 

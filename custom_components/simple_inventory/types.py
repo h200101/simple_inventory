@@ -1,4 +1,12 @@
-from typing import Any, NotRequired, TypedDict
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
+
+if TYPE_CHECKING:
+    from .coordinator import SimpleInventoryCoordinator
+    from .services import ServiceHandler
+    from .storage.repository import InventoryRepository
+    from .todo_manager import TodoManager
 
 
 class AddItemServiceData(TypedDict):
@@ -6,16 +14,19 @@ class AddItemServiceData(TypedDict):
 
     auto_add_enabled: NotRequired[bool]
     auto_add_id_to_description_enabled: NotRequired[bool]
-    auto_add_to_list_quantity: NotRequired[int]
+    auto_add_to_list_quantity: NotRequired[float]
+    barcode: NotRequired[str]
     category: NotRequired[str]
     description: NotRequired[str]
+    desired_quantity: NotRequired[float]
     expiry_alert_days: NotRequired[int]
     expiry_date: NotRequired[str]
     inventory_id: str
     location: NotRequired[str]
     name: str
-    quantity: NotRequired[int]
+    quantity: NotRequired[float]
     todo_list: NotRequired[str]
+    todo_quantity_placement: NotRequired[str]
     unit: NotRequired[str]
 
 
@@ -24,17 +35,20 @@ class UpdateItemServiceData(TypedDict):
 
     auto_add_enabled: NotRequired[bool]
     auto_add_id_to_description_enabled: NotRequired[bool]
-    auto_add_to_list_quantity: NotRequired[int]
+    auto_add_to_list_quantity: NotRequired[float]
+    barcode: NotRequired[str]
     category: NotRequired[str]
     description: NotRequired[str]
+    desired_quantity: NotRequired[float]
     expiry_alert_days: NotRequired[int]
     expiry_date: NotRequired[str]
     inventory_id: str
     location: NotRequired[str]
     name: str
     old_name: str
-    quantity: NotRequired[int]
+    quantity: NotRequired[float]
     todo_list: NotRequired[str]
+    todo_quantity_placement: NotRequired[str]
     unit: NotRequired[str]
 
 
@@ -66,15 +80,17 @@ class InventoryItem(TypedDict, total=False):
 
     auto_add_enabled: bool
     auto_add_id_to_description_enabled: bool
-    auto_add_to_list_quantity: int
+    auto_add_to_list_quantity: float
     category: str
     description: str
+    desired_quantity: float
     expiry_alert_days: int
     expiry_date: str
     location: str
     name: str
-    quantity: int
+    quantity: float
     todo_list: str
+    todo_quantity_placement: str
     unit: str
 
 
@@ -83,3 +99,12 @@ class InventoryData(TypedDict):
 
     inventories: dict[str, dict[str, Any]]
     config: NotRequired[dict[str, Any]]  # Optional field
+
+
+class SimpleInventoryDomainData(TypedDict):
+    coordinators: dict[str, "SimpleInventoryCoordinator"]
+    repository: "InventoryRepository"
+    repository_task: NotRequired[object]
+    service_handler: NotRequired["ServiceHandler"]
+    services_registered: bool
+    todo_manager: NotRequired["TodoManager"]

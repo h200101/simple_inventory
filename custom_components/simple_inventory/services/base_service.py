@@ -11,6 +11,7 @@ from ..types import (
     RemoveItemServiceData,
     UpdateItemServiceData,
 )
+from .domain_data import get_coordinators
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -18,16 +19,39 @@ _LOGGER = logging.getLogger(__name__)
 class BaseServiceHandler:
     """Base class for service handlers with common functionality."""
 
-    def __init__(self, hass: HomeAssistant, coordinator: SimpleInventoryCoordinator) -> None:
+    def __init__(self, hass: HomeAssistant) -> None:
         """Initialize the base service handler."""
         self.hass = hass
-        self.coordinator = coordinator
+
+    # ------------------------------------------------------------------
+    # Coordinator helpers
+    # ------------------------------------------------------------------
+
+    def _get_coordinator_optional(self, inventory_id: str) -> SimpleInventoryCoordinator | None:
+        return get_coordinators(self.hass).get(inventory_id)
+
+    def _require_coordinator(self, inventory_id: str) -> SimpleInventoryCoordinator | None:
+        coordinator = self._get_coordinator_optional(inventory_id)
+        if coordinator is None:
+            _LOGGER.error(
+                "No coordinator loaded for inventory '%s'; cannot process service call",
+                inventory_id,
+            )
+        return coordinator
+
+    # ------------------------------------------------------------------
+    # Common logging / persistence helpers
+    # ------------------------------------------------------------------
 
     async def _save_and_log_success(
-        self, inventory_id: str, operation: str, item_name: str
+        self,
+        coordinator: SimpleInventoryCoordinator,
+        inventory_id: str,
+        operation: str,
+        item_name: str,
     ) -> None:
         """Save data and log successful operation."""
-        await self.coordinator.async_save_data(inventory_id)
+        await coordinator.async_save_data(inventory_id)
         _LOGGER.debug("%s: %s in inventory: %s", operation, item_name, inventory_id)
 
     def _log_item_not_found(self, operation: str, item_name: str, inventory_id: str) -> None:
@@ -48,6 +72,10 @@ class BaseServiceHandler:
             inventory_id,
         )
 
+    # ------------------------------------------------------------------
+    # Misc helpers
+    # ------------------------------------------------------------------
+
     def _extract_item_kwargs(
         self,
         data: AddItemServiceData | UpdateItemServiceData,
@@ -60,3 +88,12 @@ class BaseServiceHandler:
         """Extract inventory_id and name from service call."""
         data: RemoveItemServiceData = cast(RemoveItemServiceData, call.data)
         return data["inventory_id"], data["name"]
+
+    def _get_inventory_name_barcode(self, call: ServiceCall) -> tuple[str, str | None, str | None]:
+        """Extract inventory_id, optional name, and optional barcode."""
+        data = call.data
+        return (
+            data["inventory_id"],
+            data.get("name"),
+            data.get("barcode"),
+        )

@@ -71,6 +71,10 @@
           "description": "Quantity threshold for auto-adding",
           "name": "Auto Add Threshold"
         },
+        "barcode": {
+          "description": "Barcode to associate with the item (UPC, EAN, etc.)",
+          "name": "Barcode"
+        },
         "category": {
           "description": "Category of the item",
           "name": "Category"
@@ -78,6 +82,10 @@
         "description": {
           "description": "Optional description of the item",
           "name": "Description"
+        },
+        "desired_quantity": {
+          "description": "Desired stock level for restocking (0 = use auto-add threshold)",
+          "name": "Desired Quantity"
         },
         "expiry_alert_days": {
           "description": "Number of days in advance to warn about expiring items",
@@ -107,6 +115,10 @@
           "description": "Todo list entity to add to",
           "name": "Todo List"
         },
+        "todo_quantity_placement": {
+          "description": "Where to show the quantity in todo items (name, description, or none)",
+          "name": "Todo Quantity Placement"
+        },
         "unit": {
           "description": "Unit of measurement",
           "name": "Unit"
@@ -120,6 +132,10 @@
         "amount": {
           "description": "Amount to decrement by",
           "name": "Amount"
+        },
+        "barcode": {
+          "description": "Barcode of the item (alternative to name)",
+          "name": "Barcode"
         },
         "inventory_id": {
           "description": "ID of the inventory",
@@ -158,6 +174,10 @@
           "description": "Amount to increment by",
           "name": "Amount"
         },
+        "barcode": {
+          "description": "Barcode of the item (alternative to name)",
+          "name": "Barcode"
+        },
         "inventory_id": {
           "description": "ID of the inventory",
           "name": "Inventory ID"
@@ -172,6 +192,10 @@
     "remove_item": {
       "description": "Remove an item from an inventory",
       "fields": {
+        "barcode": {
+          "description": "Barcode of the item to remove (alternative to name)",
+          "name": "Barcode"
+        },
         "inventory_id": {
           "description": "ID of the inventory to remove from",
           "name": "Inventory ID"
@@ -198,6 +222,10 @@
           "description": "Threshold for auto-add",
           "name": "Auto Add Threshold"
         },
+        "barcode": {
+          "description": "Barcode to associate with the item (UPC, EAN, etc.)",
+          "name": "Barcode"
+        },
         "category": {
           "description": "Category",
           "name": "Category"
@@ -205,6 +233,10 @@
         "description": {
           "description": "Optional description of the item",
           "name": "Description"
+        },
+        "desired_quantity": {
+          "description": "Desired stock level for restocking (0 = use auto-add threshold)",
+          "name": "Desired Quantity"
         },
         "expiry_alert_days": {
           "description": "Number of days in advance to warn about expiring items",
@@ -237,6 +269,10 @@
         "todo_list": {
           "description": "Todo list entity",
           "name": "Todo List"
+        },
+        "todo_quantity_placement": {
+          "description": "Where to show the quantity in todo items (name, description, or none)",
+          "name": "Todo Quantity Placement"
         },
         "unit": {
           "description": "Unit of measurement",

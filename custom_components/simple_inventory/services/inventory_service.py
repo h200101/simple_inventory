@@ -1,5 +1,7 @@
 """Inventory management service handler."""
 
+from __future__ import annotations
+
 import logging
 from typing import Any, cast
 
@@ -8,16 +10,17 @@ from homeassistant.util.json import JsonObjectType, JsonValueType
 
 from ..const import DOMAIN
 from ..coordinator import SimpleInventoryCoordinator
+from ..storage.repository import InventoryRepository
 from ..todo_manager import TodoManager
 from ..types import (
     AddItemServiceData,
     GetAllItemsServiceData,
     GetItemsServiceData,
     InventoryItem,
-    RemoveItemServiceData,
     UpdateItemServiceData,
 )
 from .base_service import BaseServiceHandler
+from .domain_data import get_coordinators, get_repository
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,23 +34,41 @@ class InventoryService(BaseServiceHandler):
         "auto_add_to_list_quantity",
         "category",
         "description",
+        "desired_quantity",
         "expiry_alert_days",
         "expiry_date",
         "location",
         "quantity",
         "todo_list",
+        "todo_quantity_placement",
         "unit",
     ]
 
     def __init__(
         self,
         hass: HomeAssistant,
-        coordinator: SimpleInventoryCoordinator,
         todo_manager: TodoManager,
-    ):
+    ) -> None:
         """Initialize inventory service with optional todo manager."""
-        super().__init__(hass, coordinator)
+        super().__init__(hass)
         self.todo_manager = todo_manager
+        self._repository: InventoryRepository | None = get_repository(hass)
+
+    # ---------------------------------------------------------------------
+    # Internal helpers
+    # ---------------------------------------------------------------------
+
+    def _get_coordinator_optional(self, inventory_id: str) -> SimpleInventoryCoordinator | None:
+        return get_coordinators(self.hass).get(inventory_id)
+
+    def _require_coordinator(self, inventory_id: str) -> SimpleInventoryCoordinator | None:
+        coordinator = self._get_coordinator_optional(inventory_id)
+        if coordinator is None:
+            _LOGGER.error(
+                "No coordinator loaded for inventory '%s'; cannot process service call",
+                inventory_id,
+            )
+        return coordinator
 
     async def _handle_todo_auto_add(self, item_name: str, item: InventoryItem) -> None:
         """Handle auto-add to todo list based on item configuration."""
@@ -68,174 +89,203 @@ class InventoryService(BaseServiceHandler):
                 update_data[field] = data.get(field)
         return update_data
 
+    # ---------------------------------------------------------------------
+    # Service handlers (write operations)
+    # ---------------------------------------------------------------------
+
     async def async_add_item(self, call: ServiceCall) -> None:
-        """Add an item to the inventory."""
-        item_data: AddItemServiceData = cast(AddItemServiceData, call.data)
+        item_data = cast(AddItemServiceData, call.data)
         inventory_id = item_data["inventory_id"]
         name = item_data["name"]
-        item_kwargs = self._extract_item_kwargs(item_data, ["inventory_id"])
+
+        coordinator = self._require_coordinator(inventory_id)
+        if coordinator is None:
+            return
+
+        item_kwargs = self._extract_item_kwargs(item_data, ["inventory_id", "barcode"])
+        barcode = item_data.get("barcode")
 
         try:
-            self.coordinator.add_item(inventory_id, **item_kwargs)
-            item = self.coordinator.get_item(inventory_id, name)
+            item_id = await coordinator.async_add_item(inventory_id, barcode=barcode, **item_kwargs)
+            if not item_id:
+                self._log_operation_failed("Add item", name, inventory_id)
+                return
 
+            item = await coordinator.async_get_item(inventory_id, name)
             if item:
-                await self._handle_todo_auto_add(name, item)
+                await self._handle_todo_auto_add(name, cast(InventoryItem, item))
 
-            await self._save_and_log_success(inventory_id, "Added item", name)
+            await self._save_and_log_success(coordinator, inventory_id, "Added item", name)
 
-        except Exception as e:
+        except Exception as exc:
             _LOGGER.error(
                 "Failed to add item %s to inventory %s: %s",
                 name,
                 inventory_id,
-                e,
+                exc,
             )
 
     async def async_remove_item(self, call: ServiceCall) -> None:
-        """Remove an item from the inventory."""
-        data: RemoveItemServiceData = cast(RemoveItemServiceData, call.data)
-        inventory_id = data["inventory_id"]
-        name = data["name"]
+        inventory_id, name, barcode = self._get_inventory_name_barcode(call)
+        display_name = name or barcode or "unknown"
+
+        coordinator = self._require_coordinator(inventory_id)
+        if coordinator is None:
+            return
 
         try:
-            item = self.coordinator.get_item(inventory_id, name)
+            # Resolve name for todo cleanup before removal
+            resolved_name = name
+            if not resolved_name and barcode:
+                item_by_bc = await coordinator.repository.get_item_by_barcode(inventory_id, barcode)
+                if item_by_bc:
+                    resolved_name = item_by_bc.get("name")
 
-            if self.coordinator.remove_item(inventory_id, name):
-                if item:
-                    await self.todo_manager.check_and_remove_item(name, item)
-
-                await self._save_and_log_success(inventory_id, "Removed item", name)
+            if resolved_name:
+                item = await coordinator.async_get_item(inventory_id, resolved_name)
             else:
-                self._log_item_not_found("Remove item", name, inventory_id)
+                item = None
 
-        except Exception as e:
+            if await coordinator.async_remove_item(inventory_id, name, barcode=barcode):
+                if item and resolved_name:
+                    await self.todo_manager.check_and_remove_item(
+                        resolved_name, cast(InventoryItem, item)
+                    )
+
+                await self._save_and_log_success(
+                    coordinator, inventory_id, "Removed item", display_name
+                )
+            else:
+                self._log_item_not_found("Remove item", display_name, inventory_id)
+
+        except Exception as exc:
             _LOGGER.error(
                 "Failed to remove item %s from inventory %s: %s",
-                name,
+                display_name,
                 inventory_id,
-                e,
+                exc,
             )
 
     async def async_update_item(self, call: ServiceCall) -> None:
-        """Update an existing item with new values."""
-        data: UpdateItemServiceData = cast(UpdateItemServiceData, call.data)
+        data = cast(UpdateItemServiceData, call.data)
         inventory_id = data["inventory_id"]
         old_name = data["old_name"]
         new_name = data["name"]
+        barcode = data.get("barcode")
 
-        if not self.coordinator.get_item(inventory_id, old_name):
+        coordinator = self._require_coordinator(inventory_id)
+        if coordinator is None:
+            return
+
+        existing_item = await coordinator.async_get_item(inventory_id, old_name)
+        if not existing_item:
             self._log_item_not_found("Update item", old_name, inventory_id)
             return
 
         update_data = self._extract_update_fields(data)
 
         try:
-            if not self.coordinator.update_item(inventory_id, old_name, new_name, **update_data):
+            updated = await coordinator.async_update_item(
+                inventory_id,
+                old_name,
+                new_name,
+                barcode=barcode,
+                **update_data,
+            )
+            if not updated:
                 self._log_operation_failed("Update item", old_name, inventory_id)
                 return
 
-            updated_item = self.coordinator.get_item(inventory_id, new_name)
+            updated_item = await coordinator.async_get_item(inventory_id, new_name)
             if updated_item:
-                await self._handle_todo_auto_add(new_name, updated_item)
+                await self._handle_todo_auto_add(new_name, cast(InventoryItem, updated_item))
 
             await self._save_and_log_success(
+                coordinator,
                 inventory_id,
                 f"Updated item: {old_name} -> {new_name}",
                 new_name,
             )
 
-        except Exception as e:
+        except Exception as exc:
             _LOGGER.error(
                 "Failed to update item %s in inventory %s: %s",
                 old_name,
                 inventory_id,
-                e,
+                exc,
             )
 
-    async def async_get_items(self, call: ServiceCall) -> JsonObjectType:
-        """Return full list of items for an inventory.
+    # ---------------------------------------------------------------------
+    # Query helpers
+    # ---------------------------------------------------------------------
 
-        Can be called with either inventory_id or inventory_name.
-        Response shape:
-        { "items": [{"name": str, ...item fields...}, ...] }
-        """
+    async def async_get_items(self, call: ServiceCall) -> JsonObjectType:
+        """Return full list of items for an inventory."""
         data = cast(GetItemsServiceData, call.data)
 
-        # Resolve inventory_id from either inventory_id or inventory_name
-        if "inventory_id" in data and data["inventory_id"]:
+        if data.get("inventory_id"):
             inventory_id = data["inventory_id"]
-        elif "inventory_name" in data and data["inventory_name"]:
-            # Look up inventory by name
+        elif data.get("inventory_name"):
             inventory_name = data["inventory_name"]
-            all_entries = self.hass.config_entries.async_entries(DOMAIN)
-
-            # Find entry matching the name (case-insensitive)
-            matching_entry = None
-            for entry in all_entries:
-                entry_name = entry.data.get("name", "").lower()
-                if entry_name == inventory_name.lower():
-                    matching_entry = entry
-                    break
-
+            matching_entry = next(
+                (
+                    entry
+                    for entry in self.hass.config_entries.async_entries(DOMAIN)
+                    if entry.data.get("name", "").lower() == inventory_name.lower()
+                ),
+                None,
+            )
             if not matching_entry:
                 raise ValueError(f"Inventory with name '{inventory_name}' not found")
-
             inventory_id = matching_entry.entry_id
         else:
             raise ValueError("Either 'inventory_id' or 'inventory_name' must be provided")
 
-        items_map = self.coordinator.get_all_items(inventory_id)
-        items_list: list[JsonObjectType] = [
-            cast(JsonObjectType, {"name": name, **details}) for name, details in items_map.items()
-        ]
+        coordinator = self._require_coordinator(inventory_id)
+        if coordinator is None:
+            raise ValueError(f"No coordinator available for inventory '{inventory_id}'")
+
+        items_map = await coordinator.async_list_items(inventory_id)
+        items_list: list[JsonObjectType] = [cast(JsonObjectType, item) for item in items_map]
         items_list.sort(key=lambda item: cast(str, item.get("name", "")).lower())
 
-        return cast(
-            JsonObjectType,
-            {"items": cast(list[JsonValueType], items_list)},
-        )
+        return cast(JsonObjectType, {"items": cast(list[JsonValueType], items_list)})
 
     async def async_get_items_from_all_inventories(self, call: ServiceCall) -> JsonObjectType:
         """Return full list of items grouped by inventory."""
-        _ = cast(GetAllItemsServiceData, call.data)  # ensures schema adherence, unused
+        _ = cast(GetAllItemsServiceData, call.data)
+
+        repo = get_repository(self.hass)
+        if repo is None:
+            return cast(JsonObjectType, {"inventories": []})
 
         inventories_data: list[JsonObjectType] = []
-        all_entries = self.hass.config_entries.async_entries(DOMAIN)
-        entry_lookup = {entry.entry_id: entry for entry in all_entries}
+        inventories = await repo.list_inventories()
 
-        inventories = self.coordinator.get_data().get("inventories", {})
+        coordinators = get_coordinators(self.hass)
 
-        for inventory_id in inventories:
-            items_map = self.coordinator.get_all_items(inventory_id)
-            items_list: list[JsonObjectType] = [
-                cast(JsonObjectType, {"name": name, **details})
-                for name, details in items_map.items()
-            ]
+        for inventory in inventories:
+            inventory_id = cast(str, inventory["id"])
+            coordinator = coordinators.get(inventory_id)
+
+            if coordinator:
+                items_list = await coordinator.async_list_items(inventory_id)
+            else:
+                items_list = await repo.list_items_with_details(inventory_id)
+
             items_list.sort(key=lambda item: cast(str, item.get("name", "")).lower())
 
-            entry = entry_lookup.get(inventory_id)
-            inventory_name = ""
-            description = ""
-
-            if entry:
-                inventory_name = entry.data.get("name") or entry.title or inventory_id
-                description = entry.data.get("description", "")
-            else:
-                inventory_name = inventory_id
-
-            inventory_payload: JsonObjectType = cast(
-                JsonObjectType,
-                {
-                    "inventory_id": inventory_id,
-                    "inventory_name": inventory_name,
-                    "description": description,
-                    "items": cast(list[JsonValueType], items_list),
-                },
+            inventories_data.append(
+                cast(
+                    JsonObjectType,
+                    {
+                        "inventory_id": inventory_id,
+                        "inventory_name": inventory.get("name", inventory_id),
+                        "description": inventory.get("description", ""),
+                        "items": cast(list[JsonValueType], items_list),
+                    },
+                )
             )
 
-            inventories_data.append(inventory_payload)
-
         inventories_data.sort(key=lambda inv: cast(str, inv.get("inventory_name", "")).lower())
-
         return cast(JsonObjectType, {"inventories": cast(list[JsonValueType], inventories_data)})

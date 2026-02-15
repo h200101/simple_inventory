@@ -13,9 +13,16 @@ add_item:
       required: true
       selector:
         text:
+    barcode:
+      description: Barcode to associate with the item (UPC, EAN, etc.)
+      example: "012345678901"
+      required: false
+      default: ""
+      selector:
+        text:
     quantity:
       description: Quantity of the item
-      example: 2
+      example: 2.5
       required: false
       default: 1
       selector:
@@ -65,6 +72,14 @@ add_item:
       selector:
         number:
           min: 0
+    desired_quantity:
+      description: Desired stock level for restocking. When set, the todo item quantity will be the difference between this and the current quantity. When 0, the quantity is based on the auto-add threshold instead.
+      example: 10
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
     todo_list:
       description: Todo list entity to add to
       example: "todo.grocery_list"
@@ -94,6 +109,17 @@ add_item:
       default: false
       selector:
         boolean:
+    todo_quantity_placement:
+      description: Where to show the quantity in todo items. "name" puts it in the item name (e.g. "Milk (x4)"), "description" puts it in the description field, "none" omits it entirely.
+      example: "description"
+      required: false
+      default: "name"
+      selector:
+        select:
+          options:
+            - "name"
+            - "description"
+            - "none"
 
 remove_item:
   description: Remove an item from an inventory
@@ -105,9 +131,15 @@ remove_item:
       selector:
         text:
     name:
-      description: Name of the item to remove
+      description: Name of the item to remove (required unless barcode is provided)
       example: "Frozen Pizza"
-      required: true
+      required: false
+      selector:
+        text:
+    barcode:
+      description: Barcode of the item to remove (alternative to name)
+      example: "012345678901"
+      required: false
       selector:
         text:
 
@@ -121,14 +153,20 @@ increment_item:
       selector:
         text:
     name:
-      description: Name of the item
+      description: Name of the item (required unless barcode is provided)
       example: "Frozen Pizza"
-      required: true
+      required: false
+      selector:
+        text:
+    barcode:
+      description: Barcode of the item (alternative to name)
+      example: "012345678901"
+      required: false
       selector:
         text:
     amount:
       description: Amount to increment by
-      example: 1
+      example: 0.5
       required: false
       default: 1
       selector:
@@ -145,14 +183,20 @@ decrement_item:
       selector:
         text:
     name:
-      description: Name of the item
+      description: Name of the item (required unless barcode is provided)
       example: "Frozen Pizza"
-      required: true
+      required: false
+      selector:
+        text:
+    barcode:
+      description: Barcode of the item (alternative to name)
+      example: "012345678901"
+      required: false
       selector:
         text:
     amount:
       description: Amount to decrement by
-      example: 1
+      example: 0.5
       required: false
       default: 1
       selector:
@@ -178,6 +222,12 @@ update_item:
       description: New name of the item
       example: "New Item Name"
       required: true
+      selector:
+        text:
+    barcode:
+      description: Barcode to associate with the item (UPC, EAN, etc.)
+      example: "012345678901"
+      required: false
       selector:
         text:
     quantity:
@@ -218,6 +268,14 @@ update_item:
       selector:
         number:
           min: 0
+    desired_quantity:
+      description: Desired stock level for restocking. When set, the todo item quantity will be the difference between this and the current quantity. When 0, the quantity is based on the auto-add threshold instead.
+      example: 10
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
     todo_list:
       description: Todo list entity
       example: "todo.grocery_list"
@@ -236,21 +294,34 @@ update_item:
       description: Location of the item
       example: Basement Refrigerator
       required: false
+      default: ""
       selector:
         text:
     description:
       description: Item description
       example: "Junk food"
       required: false
+      default: ""
       selector:
         text:
     auto_add_id_to_description_enabled:
       description: Appends the inventory ID to the description
       example: true
       required: false
+      default: false
       selector:
         boolean:
-
+    todo_quantity_placement:
+      description: Where to show the quantity in todo items. "name" puts it in the item name (e.g. "Milk (x4)"), "description" puts it in the description field, "none" omits it entirely.
+      example: "description"
+      required: false
+      default: "name"
+      selector:
+        select:
+          options:
+            - "name"
+            - "description"
+            - "none"
 
 get_items:
   description: Return the full list of items for an inventory. Use return_response. Can specify either inventory_id or inventory_name (but not both).

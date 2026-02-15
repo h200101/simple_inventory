@@ -71,6 +71,10 @@
           "description": "Quantité limite pour déclencher l'ajout automatique",
           "name": "Seuil d'ajout automatique"
         },
+        "barcode": {
+          "description": "Code-barres à associer à l'article (UPC, EAN, etc.)",
+          "name": "Code-barres"
+        },
         "category": {
           "description": "Catégorie de l'article",
           "name": "Catégorie"
@@ -78,6 +82,10 @@
         "description": {
           "description": "Description facultative de l'article",
           "name": "Description"
+        },
+        "desired_quantity": {
+          "description": "Niveau de stock souhaité pour le réapprovisionnement (0 = utiliser le seuil d'ajout automatique)",
+          "name": "Quantité souhaitée"
         },
         "expiry_alert_days": {
           "description": "Nombre de jours avant expiration pour alerter",
@@ -107,6 +115,10 @@
           "description": "Entité de liste de tâches à laquelle ajouter",
           "name": "Liste de tâches"
         },
+        "todo_quantity_placement": {
+          "description": "Où afficher la quantité dans les tâches (nom, description ou aucun)",
+          "name": "Emplacement de la quantité dans la tâche"
+        },
         "unit": {
           "description": "Unité de mesure",
           "name": "Unité"
@@ -120,6 +132,10 @@
         "amount": {
           "description": "Montant à décrémenter",
           "name": "Montant"
+        },
+        "barcode": {
+          "description": "Code-barres de l'article (alternative au nom)",
+          "name": "Code-barres"
         },
         "inventory_id": {
           "description": "ID de l'inventaire",
@@ -158,6 +174,10 @@
           "description": "Montant à incrémenter",
           "name": "Montant"
         },
+        "barcode": {
+          "description": "Code-barres de l'article (alternative au nom)",
+          "name": "Code-barres"
+        },
         "inventory_id": {
           "description": "ID de l'inventaire",
           "name": "ID de l'inventaire"
@@ -172,6 +192,10 @@
     "remove_item": {
       "description": "Supprimer un article d'un inventaire",
       "fields": {
+        "barcode": {
+          "description": "Code-barres de l'article à supprimer (alternative au nom)",
+          "name": "Code-barres"
+        },
         "inventory_id": {
           "description": "ID de l'inventaire duquel supprimer",
           "name": "ID de l'inventaire"
@@ -198,6 +222,10 @@
           "description": "Seuil pour ajout automatique",
           "name": "Seuil d'ajout automatique"
         },
+        "barcode": {
+          "description": "Code-barres à associer à l'article (UPC, EAN, etc.)",
+          "name": "Code-barres"
+        },
         "category": {
           "description": "Catégorie",
           "name": "Catégorie"
@@ -205,6 +233,10 @@
         "description": {
           "description": "Description facultative de l'article",
           "name": "Description"
+        },
+        "desired_quantity": {
+          "description": "Niveau de stock souhaité pour le réapprovisionnement (0 = utiliser le seuil d'ajout automatique)",
+          "name": "Quantité souhaitée"
         },
         "expiry_alert_days": {
           "description": "Nombre de jours pour prévenir en avance de l'expiration",
@@ -237,6 +269,10 @@
         "todo_list": {
           "description": "Entité de liste de tâches",
           "name": "Liste de tâches"
+        },
+        "todo_quantity_placement": {
+          "description": "Où afficher la quantité dans les tâches (nom, description ou aucun)",
+          "name": "Emplacement de la quantité dans la tâche"
         },
         "unit": {
           "description": "Unité de mesure",

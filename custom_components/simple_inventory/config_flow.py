@@ -22,7 +22,6 @@ DEFAULT_ICON = "mdi:package-variant"
 
 async def clean_inventory_name(hass: HomeAssistant, name: str) -> str:
     """Remove the word 'inventory' from the name, unless it's the only word."""
-
     try:
         current_lang = hass.config.language
         translations = await translation.async_get_translations(
@@ -75,7 +74,6 @@ class SimpleInventoryConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     },
                 )
 
-        # Preserve form data on errors
         defaults = user_input or {}
 
         return self.async_show_form(
@@ -116,7 +114,7 @@ class SimpleInventoryConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
-    ) -> OptionsFlowHandler:
+    ) -> "OptionsFlowHandler":
         """Get the options flow for this handler."""
         return OptionsFlowHandler(config_entry)
 
@@ -126,7 +124,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize options flow."""
-        pass
+        self._config_entry = config_entry
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Manage the options."""
@@ -138,20 +136,23 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if await self._async_name_exists_excluding_current(cleaned_name):
                 errors["name"] = "name_exists"
             else:
-                new_data = {
+                updated_data = {
+                    **self._config_entry.data,
                     "name": cleaned_name,
                     "icon": user_input.get("icon", DEFAULT_ICON),
                     "description": user_input.get("description", ""),
                 }
 
                 self.hass.config_entries.async_update_entry(
-                    self.config_entry,
-                    data=new_data,
+                    self._config_entry,
+                    data=updated_data,
                     title=cleaned_name,
                 )
 
+                await self._async_update_repository_metadata(updated_data)
+
                 self.hass.bus.async_fire(
-                    f"{DOMAIN}_updated_{self.config_entry.entry_id}",
+                    f"{DOMAIN}_updated_{self._config_entry.entry_id}",
                     {"action": "renamed", "new_name": cleaned_name},
                 )
 
@@ -161,20 +162,22 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Required("name", default=self.config_entry.data.get("name", "")): cv.string,
+                    vol.Required(
+                        "name", default=self._config_entry.data.get("name", "")
+                    ): cv.string,
                     vol.Optional(
                         "icon",
-                        default=self.config_entry.data.get("icon", DEFAULT_ICON),
+                        default=self._config_entry.data.get("icon", DEFAULT_ICON),
                     ): selector.IconSelector(),
                     vol.Optional(
                         "description",
-                        default=self.config_entry.data.get("description", ""),
+                        default=self._config_entry.data.get("description", ""),
                     ): cv.string,
                 }
             ),
             errors=errors,
             description_placeholders={
-                "current_name": self.config_entry.data.get("name", ""),
+                "current_name": self._config_entry.data.get("name", ""),
             },
         )
 
@@ -182,7 +185,39 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Check if name exists in other entries."""
         all_entries = self.hass.config_entries.async_entries(DOMAIN)
         return any(
-            entry.entry_id != self.config_entry.entry_id
+            entry.entry_id != self._config_entry.entry_id
             and entry.data.get("name", "").lower() == name.lower()
             for entry in all_entries
         )
+
+    async def _async_update_repository_metadata(self, data: dict[str, Any]) -> None:
+        """Mirror option changes into the SQLite repository."""
+        domain_data = self.hass.data.get(DOMAIN)
+        if not domain_data:
+            return
+
+        coordinator = (
+            domain_data.get("coordinators", {}).get(self._config_entry.entry_id)
+            if "coordinators" in domain_data
+            else None
+        )
+        repository = domain_data.get("repository")
+
+        if coordinator:
+            await coordinator.async_upsert_inventory_metadata(
+                inventory_id=self._config_entry.entry_id,
+                name=data.get("name", self._config_entry.title or self._config_entry.entry_id),
+                description=data.get("description", ""),
+                icon=data.get("icon", DEFAULT_ICON),
+                entry_type=data.get("entry_type", "inventory"),
+                metadata=None,
+            )
+        elif repository:
+            await repository.upsert_inventory(
+                inventory_id=self._config_entry.entry_id,
+                name=data.get("name", self._config_entry.title or self._config_entry.entry_id),
+                description=data.get("description", ""),
+                icon=data.get("icon", DEFAULT_ICON),
+                entry_type=data.get("entry_type", "inventory"),
+                metadata=None,
+            )
