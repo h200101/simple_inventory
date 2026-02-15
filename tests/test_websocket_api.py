@@ -1,5 +1,8 @@
 """Tests for the WebSocket API."""
 
+from __future__ import annotations
+
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -16,18 +19,18 @@ from custom_components.simple_inventory.websocket_api import (
 
 
 @pytest.fixture
-def mock_connection():
+def mock_connection() -> MagicMock:
     """Create a mock WebSocket connection."""
     conn = MagicMock()
     conn.send_result = MagicMock()
     conn.send_error = MagicMock()
     conn.send_event = MagicMock()
-    conn.subscriptions = {}
+    conn.subscriptions: dict[int, Any] = {}
     return conn
 
 
 @pytest.fixture
-def mock_coordinator_ws():
+def mock_coordinator_ws() -> MagicMock:
     """Create a mock coordinator for WS tests."""
     coordinator = MagicMock()
     coordinator.async_list_items = AsyncMock(
@@ -47,7 +50,9 @@ def mock_coordinator_ws():
 
 
 class TestHandleListItems:
-    async def test_list_items_success(self, hass_mock, mock_connection, mock_coordinator_ws):
+    async def test_list_items_success(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
         hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
         msg = {"id": 1, "type": f"{DOMAIN}/list_items", "inventory_id": "inv1"}
 
@@ -64,7 +69,9 @@ class TestHandleListItems:
             },
         )
 
-    async def test_list_items_inventory_not_found(self, hass_mock, mock_connection):
+    async def test_list_items_inventory_not_found(
+        self, hass_mock: MagicMock, mock_connection: MagicMock
+    ) -> None:
         msg = {"id": 1, "type": f"{DOMAIN}/list_items", "inventory_id": "missing"}
 
         await _handle_list_items(hass_mock, mock_connection, msg)
@@ -75,7 +82,9 @@ class TestHandleListItems:
 
 
 class TestHandleGetItem:
-    async def test_get_item_success(self, hass_mock, mock_connection, mock_coordinator_ws):
+    async def test_get_item_success(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
         hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
         msg = {
             "id": 2,
@@ -91,7 +100,9 @@ class TestHandleGetItem:
             2, {"item": {"name": "milk", "quantity": 2}}
         )
 
-    async def test_get_item_inventory_not_found(self, hass_mock, mock_connection):
+    async def test_get_item_inventory_not_found(
+        self, hass_mock: MagicMock, mock_connection: MagicMock
+    ) -> None:
         msg = {
             "id": 2,
             "type": f"{DOMAIN}/get_item",
@@ -105,7 +116,9 @@ class TestHandleGetItem:
             2, "inventory_not_found", "Inventory 'missing' not found"
         )
 
-    async def test_get_item_not_found(self, hass_mock, mock_connection, mock_coordinator_ws):
+    async def test_get_item_not_found(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
         hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
         mock_coordinator_ws.async_get_item.return_value = None
         msg = {
@@ -125,7 +138,9 @@ class TestHandleGetItem:
 
 
 class TestHandleSubscribe:
-    def test_subscribe_with_inventory_id(self, hass_mock, mock_connection):
+    def test_subscribe_with_inventory_id(
+        self, hass_mock: MagicMock, mock_connection: MagicMock
+    ) -> None:
         msg = {
             "id": 4,
             "type": f"{DOMAIN}/subscribe",
@@ -140,7 +155,7 @@ class TestHandleSubscribe:
         assert 4 in mock_connection.subscriptions
         mock_connection.send_result.assert_called_once_with(4)
 
-    def test_subscribe_global(self, hass_mock, mock_connection):
+    def test_subscribe_global(self, hass_mock: MagicMock, mock_connection: MagicMock) -> None:
         msg = {
             "id": 5,
             "type": f"{DOMAIN}/subscribe",
@@ -154,7 +169,9 @@ class TestHandleSubscribe:
         assert 5 in mock_connection.subscriptions
         mock_connection.send_result.assert_called_once_with(5)
 
-    async def test_subscribe_forwards_events(self, hass_mock, mock_connection, mock_coordinator_ws):
+    async def test_subscribe_forwards_events(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
         hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
         msg = {
             "id": 6,
@@ -179,7 +196,9 @@ class TestHandleSubscribe:
 
 
 class TestHandleGetHistory:
-    async def test_get_inventory_history(self, hass_mock, mock_connection, mock_coordinator_ws):
+    async def test_get_inventory_history(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
         hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
         msg = {
             "id": 20,
@@ -194,7 +213,9 @@ class TestHandleGetHistory:
         result = mock_connection.send_result.call_args[0][1]
         assert "events" in result
 
-    async def test_get_item_history(self, hass_mock, mock_connection, mock_coordinator_ws):
+    async def test_get_item_history(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
         hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
         msg = {
             "id": 21,
@@ -207,7 +228,9 @@ class TestHandleGetHistory:
 
         mock_coordinator_ws.async_get_item_history.assert_awaited_once()
 
-    async def test_get_history_inventory_not_found(self, hass_mock, mock_connection):
+    async def test_get_history_inventory_not_found(
+        self, hass_mock: MagicMock, mock_connection: MagicMock
+    ) -> None:
         msg = {
             "id": 22,
             "type": f"{DOMAIN}/get_history",
@@ -220,7 +243,9 @@ class TestHandleGetHistory:
 
 
 class TestHandleExport:
-    async def test_export_success(self, hass_mock, mock_connection, mock_coordinator_ws):
+    async def test_export_success(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
         hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
         msg = {
             "id": 30,
@@ -234,7 +259,9 @@ class TestHandleExport:
         mock_coordinator_ws.async_export_inventory.assert_awaited_once_with("inv1", "json")
         mock_connection.send_result.assert_called_once()
 
-    async def test_export_inventory_not_found(self, hass_mock, mock_connection):
+    async def test_export_inventory_not_found(
+        self, hass_mock: MagicMock, mock_connection: MagicMock
+    ) -> None:
         msg = {
             "id": 31,
             "type": f"{DOMAIN}/export",
@@ -248,7 +275,9 @@ class TestHandleExport:
 
 
 class TestHandleImport:
-    async def test_import_success(self, hass_mock, mock_connection, mock_coordinator_ws):
+    async def test_import_success(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
         hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
         msg = {
             "id": 40,
@@ -264,7 +293,9 @@ class TestHandleImport:
         mock_coordinator_ws.async_import_inventory.assert_awaited_once()
         mock_connection.send_result.assert_called_once()
 
-    async def test_import_inventory_not_found(self, hass_mock, mock_connection):
+    async def test_import_inventory_not_found(
+        self, hass_mock: MagicMock, mock_connection: MagicMock
+    ) -> None:
         msg = {
             "id": 41,
             "type": f"{DOMAIN}/import",

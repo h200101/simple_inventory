@@ -840,9 +840,12 @@ class TestTodoManager:
 
         mock_state = MagicMock()
         mock_state.attributes = {"supported_features": 79}
-        todo_manager.hass.states.get = MagicMock(return_value=mock_state)
-
         with (
+            patch.object(
+                todo_manager.hass.states,
+                "get",
+                MagicMock(return_value=mock_state),
+            ),
             patch.object(
                 todo_manager,
                 "_get_incomplete_items",
@@ -876,9 +879,13 @@ class TestTodoManager:
 
         mock_state = MagicMock()
         mock_state.attributes = {"supported_features": 79}
-        todo_manager.hass.states.get = MagicMock(return_value=mock_state)
 
         with (
+            patch.object(
+                todo_manager.hass.states,
+                "get",
+                MagicMock(return_value=mock_state),
+            ),
             patch.object(
                 todo_manager,
                 "_get_incomplete_items",
@@ -944,9 +951,13 @@ class TestTodoManager:
 
         mock_state = MagicMock()
         mock_state.attributes = {"supported_features": 79}
-        todo_manager.hass.states.get = MagicMock(return_value=mock_state)
 
         with (
+            patch.object(
+                todo_manager.hass.states,
+                "get",
+                MagicMock(return_value=mock_state),
+            ),
             patch.object(
                 todo_manager,
                 "_get_incomplete_items",
@@ -978,11 +989,15 @@ class TestTodoManager:
 
         mock_state = MagicMock()
         mock_state.attributes = {"supported_features": 79}
-        todo_manager.hass.states.get = MagicMock(return_value=mock_state)
 
         matching_item = {"summary": "Milk", "uid": "123"}
 
         with (
+            patch.object(
+                todo_manager.hass.states,
+                "get",
+                MagicMock(return_value=mock_state),
+            ),
             patch.object(
                 todo_manager,
                 "_find_matching_incomplete_item",
