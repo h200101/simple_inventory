@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -25,7 +24,7 @@ def mock_connection() -> MagicMock:
     conn.send_result = MagicMock()
     conn.send_error = MagicMock()
     conn.send_event = MagicMock()
-    conn.subscriptions: dict[int, Any] = {}
+    conn.subscriptions = {}
     return conn
 
 
