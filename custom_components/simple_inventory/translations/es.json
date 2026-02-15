@@ -71,6 +71,10 @@
           "description": "Umbral de cantidad para auto-agregar",
           "name": "Umbral de Auto Agregar"
         },
+        "barcode": {
+          "description": "Código de barras para asociar al artículo (UPC, EAN, etc.)",
+          "name": "Código de Barras"
+        },
         "category": {
           "description": "Categoría del artículo",
           "name": "Categoría"
@@ -78,6 +82,10 @@
         "description": {
           "description": "Descripción opcional del artículo",
           "name": "Descripción"
+        },
+        "desired_quantity": {
+          "description": "Nivel de stock deseado para reposición (0 = usar umbral de auto-agregar)",
+          "name": "Cantidad Deseada"
         },
         "expiry_alert_days": {
           "description": "Número de días de anticipación para avisar sobre artículos que vencen",
@@ -107,6 +115,10 @@
           "description": "Entidad de lista de tareas a la que agregar",
           "name": "Lista de Tareas"
         },
+        "todo_quantity_placement": {
+          "description": "Dónde mostrar la cantidad en las tareas (nombre, descripción o ninguno)",
+          "name": "Ubicación de Cantidad en Tarea"
+        },
         "unit": {
           "description": "Unidad de medida",
           "name": "Unidad"
@@ -120,6 +132,10 @@
         "amount": {
           "description": "Cantidad a decrementar",
           "name": "Cantidad"
+        },
+        "barcode": {
+          "description": "Código de barras del artículo (alternativa al nombre)",
+          "name": "Código de Barras"
         },
         "inventory_id": {
           "description": "ID del inventario",
@@ -158,6 +174,10 @@
           "description": "Cantidad a incrementar",
           "name": "Cantidad"
         },
+        "barcode": {
+          "description": "Código de barras del artículo (alternativa al nombre)",
+          "name": "Código de Barras"
+        },
         "inventory_id": {
           "description": "ID del inventario",
           "name": "ID del Inventario"
@@ -172,6 +192,10 @@
     "remove_item": {
       "description": "Quitar un artículo de un inventario",
       "fields": {
+        "barcode": {
+          "description": "Código de barras del artículo a quitar (alternativa al nombre)",
+          "name": "Código de Barras"
+        },
         "inventory_id": {
           "description": "ID del inventario del que quitar",
           "name": "ID del Inventario"
@@ -198,6 +222,10 @@
           "description": "Umbral para auto-agregar",
           "name": "Umbral de Auto Agregar"
         },
+        "barcode": {
+          "description": "Código de barras para asociar al artículo (UPC, EAN, etc.)",
+          "name": "Código de Barras"
+        },
         "category": {
           "description": "Categoría",
           "name": "Categoría"
@@ -205,6 +233,10 @@
         "description": {
           "description": "Descripción opcional del artículo",
           "name": "Descripción"
+        },
+        "desired_quantity": {
+          "description": "Nivel de stock deseado para reposición (0 = usar umbral de auto-agregar)",
+          "name": "Cantidad Deseada"
         },
         "expiry_alert_days": {
           "description": "Número de días de anticipación para avisar sobre artículos que vencen",
@@ -237,6 +269,10 @@
         "todo_list": {
           "description": "Entidad de lista de tareas",
           "name": "Lista de Tareas"
+        },
+        "todo_quantity_placement": {
+          "description": "Dónde mostrar la cantidad en las tareas (nombre, descripción o ninguno)",
+          "name": "Ubicación de Cantidad en Tarea"
         },
         "unit": {
           "description": "Unidad de medida",
