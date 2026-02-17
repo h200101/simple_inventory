@@ -953,9 +953,11 @@ async def test_add_item_records_history(
 
 
 @pytest.mark.asyncio
-async def test_remove_item_records_history(
+async def test_remove_item_does_not_record_history(
     coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
 ) -> None:
+    """History is not recorded for removes because ON DELETE CASCADE would
+    delete the history row along with the item."""
     mock_repository.get_item_by_name = AsyncMock(
         return_value={"id": "milk-id", "name": "Milk", "quantity": 5}
     )
@@ -964,11 +966,7 @@ async def test_remove_item_records_history(
         ok = await coordinator.async_remove_item("kitchen_123", "Milk")
 
     assert ok is True
-    mock_repository.record_history_event.assert_awaited_once()
-    call_kwargs = mock_repository.record_history_event.call_args.kwargs
-    assert call_kwargs["event_type"] == "remove"
-    assert call_kwargs["quantity_before"] == 5
-    assert call_kwargs["quantity_after"] == 0
+    mock_repository.record_history_event.assert_not_awaited()
 
 
 # --- Feature 4: Import/Export tests ---
