@@ -270,17 +270,8 @@ class SimpleInventoryCoordinator:
             )
             return False
 
-        qty_before = float(item.get(FIELD_QUANTITY, 0))
         removed = await self.repository.delete_item(item["id"])
         if removed:
-            await self.repository.record_history_event(
-                item_id=item["id"],
-                inventory_id=inventory_id,
-                event_type="remove",
-                amount=qty_before,
-                quantity_before=qty_before,
-                quantity_after=0,
-            )
             await self._after_change(inventory_id)
         return removed
 
