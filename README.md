@@ -109,6 +109,41 @@ Items can have barcodes associated with them. Most service calls accept either `
 
 Every add, remove, increment, and decrement is recorded with before/after quantities and timestamps. Query history via the WebSocket API.
 
+### Consumption Analytics
+
+Track how fast you consume items. The integration calculates consumption rates based on decrement history:
+
+- **Daily / weekly consumption rate** — How much you use per day or week
+- **Days until depletion** — Estimated days before the item runs out at the current rate
+- **Average restock interval** — How often you typically restock the item
+- **Total consumed / events tracked** — Lifetime consumption totals
+
+Rates can be calculated over a configurable time window (e.g. last 30, 60, or 90 days) or across all history. The companion card shows this data in a "Consumption" tab in the item history modal. You can also query rates via the service call or WebSocket API for use in automations.
+
+### Events
+
+The integration fires Home Assistant events on key inventory transitions, enabling automations without polling sensor state.
+
+| Event | When it fires |
+|---|---|
+| `simple_inventory_item_added` | A new item is added to an inventory |
+| `simple_inventory_item_removed` | An item is deleted from an inventory |
+| `simple_inventory_item_quantity_changed` | Any increment or decrement |
+| `simple_inventory_item_depleted` | Quantity drops to 0 (was > 0) |
+| `simple_inventory_item_restocked` | Quantity rises above 0 (was 0) |
+| `simple_inventory_item_added_to_list` | Item is newly added to a todo list |
+| `simple_inventory_item_removed_from_list` | Item is removed from a todo list |
+
+**Event payloads:**
+
+`item_added`: `item_name`, `inventory_id`, `quantity`
+`item_removed`: `item_name`, `inventory_id`
+`item_quantity_changed`: `item_name`, `inventory_id`, `quantity_before`, `quantity_after`, `amount`, `direction` (`"increment"` or `"decrement"`)
+`item_depleted`: `item_name`, `inventory_id`, `previous_quantity`
+`item_restocked`: `item_name`, `inventory_id`, `quantity`
+`item_added_to_list`: `item_name`, `inventory_id`, `quantity`, `todo_list`, `quantity_needed`
+`item_removed_from_list`: `item_name`, `inventory_id`, `quantity`, `todo_list`
+
 ### Import and Export
 
 Export your inventory to JSON or CSV, and import data back with configurable merge strategies (`skip`, `overwrite`, or `merge_quantities`). Available via the WebSocket API.
@@ -241,7 +276,7 @@ data:
 
 ### `simple_inventory.get_items`
 
-Retrieve all items for a specific inventory. Supports responses — set `return_response: true` in Developer Tools.
+Retrieve all items for a specific inventory. Supports `response_variable` for use in automations and scripts.
 
 Specify the inventory by ID or name (case-insensitive), but not both:
 
@@ -249,12 +284,14 @@ Specify the inventory by ID or name (case-insensitive), but not both:
 service: simple_inventory.get_items
 data:
   inventory_id: "01JYFPCDMBRBRK4MB3C26S2FKH"
+response_variable: result
 ```
 
 ```yaml
 service: simple_inventory.get_items
 data:
   inventory_name: "Kitchen Freezer"
+response_variable: result
 ```
 
 Example response:
@@ -289,10 +326,11 @@ Note the dual fields: `category`/`categories` and `location`/`locations`. The si
 
 ### `simple_inventory.get_items_from_all_inventories`
 
-Retrieve items from every inventory at once.
+Retrieve items from every inventory at once. Supports `response_variable` for use in automations and scripts.
 
 ```yaml
 service: simple_inventory.get_items_from_all_inventories
+response_variable: result
 ```
 
 Example response:
@@ -315,6 +353,47 @@ Example response:
   ]
 }
 ```
+
+### `simple_inventory.get_item_consumption_rates`
+
+Get consumption analytics for a specific item. Requires at least 2 decrement events to produce meaningful data. Supports `response_variable` for use in automations and scripts.
+
+```yaml
+service: simple_inventory.get_item_consumption_rates
+data:
+  inventory_id: "01JYFPCDMBRBRK4MB3C26S2FKH"
+  name: "Frozen Pizza"
+  window_days: 30
+response_variable: rates
+```
+
+Only `inventory_id` and `name` are required. Omit `window_days` to use all history.
+
+Example response:
+
+```json
+{
+  "item_name": "Frozen Pizza",
+  "current_quantity": 3.0,
+  "unit": "boxes",
+  "decrement_count": 12,
+  "total_consumed": 18.0,
+  "window_days": 30,
+  "daily_rate": 0.6,
+  "weekly_rate": 4.2,
+  "days_until_depletion": 5,
+  "avg_restock_days": 14.0,
+  "has_sufficient_data": true
+}
+```
+
+| Field | Description |
+|---|---|
+| `daily_rate` | Average units consumed per day (null if insufficient data) |
+| `weekly_rate` | Average units consumed per week (null if insufficient data) |
+| `days_until_depletion` | Estimated days until quantity reaches 0 (null if rate is 0 or insufficient data) |
+| `avg_restock_days` | Average days between increment events (null if fewer than 2 restocks) |
+| `has_sufficient_data` | `true` if there are at least 2 decrement events to calculate rates |
 
 ## WebSocket API
 
@@ -393,6 +472,47 @@ Returns: `{ "events": [...] }` where each event has:
 - `quantity_before`, `quantity_after` — Stock levels
 - `timestamp` — When it happened
 
+### `simple_inventory/get_item_consumption_rates`
+
+Get consumption analytics for a specific item. Requires at least 2 decrement events to produce meaningful data.
+
+```json
+{
+  "type": "simple_inventory/get_item_consumption_rates",
+  "inventory_id": "01JYFPCDMBRBRK4MB3C26S2FKH",
+  "item_name": "Frozen Pizza",
+  "window_days": 30
+}
+```
+
+`window_days` is optional — omit it to calculate rates across all history.
+
+Returns:
+
+```json
+{
+  "item_name": "Frozen Pizza",
+  "current_quantity": 3.0,
+  "unit": "boxes",
+  "decrement_count": 12,
+  "total_consumed": 18.0,
+  "window_days": 30,
+  "daily_rate": 0.6,
+  "weekly_rate": 4.2,
+  "days_until_depletion": 5,
+  "avg_restock_days": 14.0,
+  "has_sufficient_data": true
+}
+```
+
+| Field | Description |
+|---|---|
+| `daily_rate` | Average units consumed per day (null if insufficient data) |
+| `weekly_rate` | Average units consumed per week (null if insufficient data) |
+| `days_until_depletion` | Estimated days until quantity reaches 0 (null if rate is 0 or insufficient data) |
+| `avg_restock_days` | Average days between increment events (null if fewer than 2 restocks) |
+| `has_sufficient_data` | `true` if there are at least 2 decrement events to calculate rates |
+
 ### `simple_inventory/export`
 
 Export inventory data.
@@ -429,6 +549,36 @@ Merge strategies:
 Returns: `{ "added": 1, "updated": 0, "skipped": 0, "errors": [] }`
 
 ## Automation Examples
+
+### Notify when an item is added to your shopping list
+
+```yaml
+automation:
+  - alias: "Shopping list notification"
+    trigger:
+      - platform: event
+        event_type: simple_inventory_item_added_to_list
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "Added to shopping list"
+          message: "{{ trigger.event.data.item_name }} (need {{ trigger.event.data.quantity_needed }})"
+```
+
+### Alert when something runs out
+
+```yaml
+automation:
+  - alias: "Out of stock alert"
+    trigger:
+      - platform: event
+        event_type: simple_inventory_item_depleted
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "Out of stock"
+          message: "{{ trigger.event.data.item_name }} is depleted!"
+```
 
 ### Barcode scanner: increment on scan
 
@@ -489,6 +639,63 @@ automation:
             {% endfor %}
 ```
 
+### Alert when consumption rate spikes
+
+Compare recent consumption against the long-term baseline and notify when an item is being used faster than normal:
+
+```yaml
+script:
+  check_consumption_spike:
+    sequence:
+      - service: simple_inventory.get_item_consumption_rates
+        data:
+          inventory_id: "01JYFPCDMBRBRK4MB3C26S2FKH"
+          name: "Milk"
+          window_days: 30
+        response_variable: recent
+      - service: simple_inventory.get_item_consumption_rates
+        data:
+          inventory_id: "01JYFPCDMBRBRK4MB3C26S2FKH"
+          name: "Milk"
+        response_variable: baseline
+      - condition: template
+        value_template: >
+          {{ recent.daily_rate and baseline.daily_rate and
+             recent.daily_rate > (baseline.daily_rate * 1.5) }}
+      - service: notify.mobile_app
+        data:
+          title: "Milk consumption spike"
+          message: >
+            Recent: {{ recent.daily_rate | round(1) }}/day
+            vs baseline: {{ baseline.daily_rate | round(1) }}/day
+```
+
+### Alert when an item is running low
+
+```yaml
+automation:
+  - alias: "Depletion warning"
+    trigger:
+      - platform: time_pattern
+        hours: "/6"
+    action:
+      - service: simple_inventory.get_item_consumption_rates
+        data:
+          inventory_id: "01JYFPCDMBRBRK4MB3C26S2FKH"
+          name: "Coffee"
+        response_variable: rates
+      - condition: template
+        value_template: >
+          {{ rates.days_until_depletion is not none and
+             rates.days_until_depletion <= 7 }}
+      - service: notify.mobile_app
+        data:
+          title: "Coffee running low"
+          message: >
+            ~{{ rates.days_until_depletion }} days left at current rate
+            ({{ rates.daily_rate | round(1) }} {{ rates.unit }}/day)
+```
+
 ### Get inventory data in a script
 
 ```yaml
@@ -503,4 +710,25 @@ script:
         data:
           title: "Inventory Report"
           message: "You have {{ result.items | length }} items in the fridge."
+```
+
+### Cross-inventory low stock summary
+
+```yaml
+script:
+  low_stock_summary:
+    sequence:
+      - service: simple_inventory.get_items_from_all_inventories
+        response_variable: all_data
+      - service: notify.mobile_app
+        data:
+          title: "Inventory Summary"
+          message: >
+            {% set ns = namespace(low=[]) %}
+            {% for inv in all_data.inventories %}
+              {% for item in inv.items if item.auto_add_enabled and item.quantity <= item.auto_add_to_list_quantity %}
+                {% set ns.low = ns.low + [item.name ~ ' (' ~ inv.inventory_name ~ ')'] %}
+              {% endfor %}
+            {% endfor %}
+            {% if ns.low %}Low stock: {{ ns.low | join(', ') }}{% else %}All stocked up!{% endif %}
 ```

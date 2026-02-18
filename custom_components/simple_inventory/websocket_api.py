@@ -23,6 +23,8 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_get_history)
     websocket_api.async_register_command(hass, ws_export)
     websocket_api.async_register_command(hass, ws_import)
+    websocket_api.async_register_command(hass, ws_get_item_consumption_rates)
+    websocket_api.async_register_command(hass, ws_get_inventory_consumption_rates)
 
 
 async def _handle_list_items(
@@ -288,6 +290,63 @@ async def ws_get_history(
     await _handle_get_history(hass, connection, msg)
 
 
+async def _handle_get_item_consumption_rates(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Return consumption rates for a single item."""
+    inventory_id = msg["inventory_id"]
+    item_name = msg["item_name"]
+    window_days = msg.get("window_days")
+
+    coordinator = get_coordinators(hass).get(inventory_id)
+    if coordinator is None:
+        connection.send_error(
+            msg["id"],
+            "inventory_not_found",
+            f"Inventory '{inventory_id}' not found",
+        )
+        return
+
+    result = await coordinator.async_get_item_consumption_rates(
+        inventory_id, item_name, window_days=window_days
+    )
+    if result is None:
+        connection.send_error(
+            msg["id"],
+            "item_not_found",
+            f"Item '{item_name}' not found in inventory '{inventory_id}'",
+        )
+        return
+
+    connection.send_result(msg["id"], result)
+
+
+async def _handle_get_inventory_consumption_rates(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Return consumption rates for all items in an inventory."""
+    inventory_id = msg["inventory_id"]
+    window_days = msg.get("window_days")
+
+    coordinator = get_coordinators(hass).get(inventory_id)
+    if coordinator is None:
+        connection.send_error(
+            msg["id"],
+            "inventory_not_found",
+            f"Inventory '{inventory_id}' not found",
+        )
+        return
+
+    result = await coordinator.async_get_inventory_consumption_rates(
+        inventory_id, window_days=window_days
+    )
+    connection.send_result(msg["id"], result)
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): f"{DOMAIN}/subscribe",
@@ -302,3 +361,38 @@ def ws_subscribe(
 ) -> None:
     """WS command: subscribe."""
     _handle_subscribe(hass, connection, msg)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/get_item_consumption_rates",
+        vol.Required("inventory_id"): str,
+        vol.Required("item_name"): str,
+        vol.Optional("window_days"): vol.Any(vol.In([30, 60, 90]), None),
+    }
+)
+@websocket_api.async_response
+async def ws_get_item_consumption_rates(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """WS command: get item consumption rates."""
+    await _handle_get_item_consumption_rates(hass, connection, msg)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/get_inventory_consumption_rates",
+        vol.Required("inventory_id"): str,
+        vol.Optional("window_days"): vol.Any(vol.In([30, 60, 90]), None),
+    }
+)
+@websocket_api.async_response
+async def ws_get_inventory_consumption_rates(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """WS command: get inventory consumption rates."""
+    await _handle_get_inventory_consumption_rates(hass, connection, msg)

@@ -13,6 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from .const import (
+    ANALYTICS_MIN_EVENTS,
     DEFAULT_AUTO_ADD_ENABLED,
     DEFAULT_AUTO_ADD_TO_LIST_QUANTITY,
     DEFAULT_CATEGORY,
@@ -25,6 +26,11 @@ from .const import (
     DEFAULT_TODO_QUANTITY_PLACEMENT,
     DEFAULT_UNIT,
     DOMAIN,
+    EVENT_ITEM_ADDED,
+    EVENT_ITEM_DEPLETED,
+    EVENT_ITEM_QUANTITY_CHANGED,
+    EVENT_ITEM_REMOVED,
+    EVENT_ITEM_RESTOCKED,
     FIELD_AUTO_ADD_ENABLED,
     FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED,
     FIELD_AUTO_ADD_TO_LIST_QUANTITY,
@@ -44,6 +50,15 @@ from .const import (
 from .storage.repository import InventoryRepository
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _compute_avg_restock_days(timestamps: list[str]) -> float | None:
+    """Compute mean gap in days between consecutive restock timestamps."""
+    if len(timestamps) < 2:
+        return None
+    parsed = sorted(datetime.fromisoformat(ts) for ts in timestamps)
+    gaps = [(parsed[i + 1] - parsed[i]).total_seconds() / 86400 for i in range(len(parsed) - 1)]
+    return round(sum(gaps) / len(gaps), 1)
 
 
 class SimpleInventoryCoordinator:
@@ -187,6 +202,14 @@ class SimpleInventoryCoordinator:
         )
 
         await self._after_change(inventory_id)
+        self.hass.bus.async_fire(
+            EVENT_ITEM_ADDED,
+            {
+                "item_name": cleaned_name,
+                "inventory_id": inventory_id,
+                "quantity": quantity,
+            },
+        )
         return item_id
 
     async def async_update_item(
@@ -273,6 +296,13 @@ class SimpleInventoryCoordinator:
         removed = await self.repository.delete_item(item["id"])
         if removed:
             await self._after_change(inventory_id)
+            self.hass.bus.async_fire(
+                EVENT_ITEM_REMOVED,
+                {
+                    "item_name": cleaned_name,
+                    "inventory_id": inventory_id,
+                },
+            )
         return removed
 
     async def async_increment_item(
@@ -462,6 +492,126 @@ class SimpleInventoryCoordinator:
             limit=limit,
             offset=offset,
         )
+
+    @staticmethod
+    def _compute_consumption_rates(
+        raw: dict[str, Any],
+        current_quantity: float,
+        min_events: int = ANALYTICS_MIN_EVENTS,
+    ) -> dict[str, Any]:
+        """Derive consumption rates from raw aggregates."""
+        decrement_count = raw["decrement_count"]
+        total_consumed = raw["total_consumed"]
+        window_days = raw["window_days"]
+        first_event_ts = raw.get("first_event_ts")
+        has_sufficient_data = decrement_count >= min_events
+
+        daily_rate: float | None = None
+        weekly_rate: float | None = None
+        days_until_depletion: float | None = None
+
+        if has_sufficient_data and total_consumed > 0:
+            if window_days is not None:
+                span_days = float(window_days)
+            elif first_event_ts:
+                first_dt = datetime.fromisoformat(first_event_ts)
+                span_days = max((datetime.utcnow() - first_dt).total_seconds() / 86400, 1.0)
+            else:
+                span_days = 1.0
+
+            daily_rate = round(total_consumed / span_days, 4)
+            weekly_rate = round(daily_rate * 7, 4)
+
+            if daily_rate > 0:
+                days_until_depletion = round(current_quantity / daily_rate, 1)
+
+        avg_restock_days = _compute_avg_restock_days(raw.get("restock_timestamps", []))
+
+        return {
+            "decrement_count": decrement_count,
+            "total_consumed": total_consumed,
+            "window_days": window_days,
+            "daily_rate": daily_rate,
+            "weekly_rate": weekly_rate,
+            "days_until_depletion": days_until_depletion,
+            "avg_restock_days": avg_restock_days,
+            "has_sufficient_data": has_sufficient_data,
+        }
+
+    async def async_get_item_consumption_rates(
+        self,
+        inventory_id: str,
+        item_name: str,
+        *,
+        window_days: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Return consumption rates for a single item."""
+        await self.async_initialize()
+        item = await self.repository.get_item_by_name(inventory_id, item_name)
+        if not item:
+            return None
+
+        raw = await self.repository.get_item_consumption_stats(item["id"], window_days=window_days)
+        rates = self._compute_consumption_rates(raw, float(item.get(FIELD_QUANTITY, 0)))
+        rates["item_name"] = item.get(FIELD_NAME, item_name)
+        rates["current_quantity"] = float(item.get(FIELD_QUANTITY, 0))
+        rates["unit"] = item.get(FIELD_UNIT, "")
+        return rates
+
+    async def async_get_inventory_consumption_rates(
+        self,
+        inventory_id: str,
+        *,
+        window_days: int | None = None,
+    ) -> dict[str, Any]:
+        """Return consumption rates for all items in an inventory."""
+        await self.async_initialize()
+        rows = await self.repository.get_inventory_consumption_stats(
+            inventory_id, window_days=window_days
+        )
+
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            rates = self._compute_consumption_rates(row, row["current_quantity"])
+            rates["item_name"] = row["item_name"]
+            rates["current_quantity"] = row["current_quantity"]
+            rates["unit"] = row["unit"]
+            items.append(rates)
+
+        tracked = [i for i in items if i["decrement_count"] > 0]
+        total_consumed = sum(i["total_consumed"] for i in items)
+
+        most_consumed = sorted(tracked, key=lambda x: x["total_consumed"], reverse=True)[:5]
+        running_out = sorted(
+            (i for i in items if i["days_until_depletion"] is not None),
+            key=lambda x: x["days_until_depletion"],
+        )[:5]
+
+        return {
+            "inventory_id": inventory_id,
+            "window_days": window_days,
+            "items": items,
+            "summary": {
+                "total_items_tracked": len(tracked),
+                "total_consumed": total_consumed,
+                "most_consumed": [
+                    {
+                        "item_name": i["item_name"],
+                        "total_consumed": i["total_consumed"],
+                        "daily_rate": i["daily_rate"],
+                    }
+                    for i in most_consumed
+                ],
+                "running_out_soonest": [
+                    {
+                        "item_name": i["item_name"],
+                        "days_until_depletion": i["days_until_depletion"],
+                        "current_quantity": i["current_quantity"],
+                    }
+                    for i in running_out
+                ],
+            },
+        }
 
     async def async_export_inventory(
         self,
@@ -784,6 +934,39 @@ class SimpleInventoryCoordinator:
                 quantity_before=qty_before,
                 quantity_after=new_quantity,
             )
+
+            if new_quantity == 0 and qty_before > 0:
+                self.hass.bus.async_fire(
+                    EVENT_ITEM_DEPLETED,
+                    {
+                        "item_name": cleaned_name,
+                        "inventory_id": inventory_id,
+                        "previous_quantity": qty_before,
+                    },
+                )
+
+            if qty_before == 0 and new_quantity > 0:
+                self.hass.bus.async_fire(
+                    EVENT_ITEM_RESTOCKED,
+                    {
+                        "item_name": cleaned_name,
+                        "inventory_id": inventory_id,
+                        "quantity": new_quantity,
+                    },
+                )
+
+            self.hass.bus.async_fire(
+                EVENT_ITEM_QUANTITY_CHANGED,
+                {
+                    "item_name": cleaned_name,
+                    "inventory_id": inventory_id,
+                    "quantity_before": qty_before,
+                    "quantity_after": new_quantity,
+                    "amount": abs(delta),
+                    "direction": "increment" if delta > 0 else "decrement",
+                },
+            )
+
             await self._after_change(inventory_id)
         return updated
 

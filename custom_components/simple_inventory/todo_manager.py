@@ -8,6 +8,8 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     DEFAULT_AUTO_ADD_TO_LIST_QUANTITY,
+    EVENT_ITEM_ADDED_TO_LIST,
+    EVENT_ITEM_REMOVED_FROM_LIST,
     FIELD_AUTO_ADD_ENABLED,
     FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED,
     FIELD_AUTO_ADD_TO_LIST_QUANTITY,
@@ -299,6 +301,16 @@ class TodoManager:
                 await self._update_todo_item(todo_list, matching_item, new_name, description)
             else:
                 await self._add_todo_item(todo_list, new_name, description)
+                self.hass.bus.async_fire(
+                    EVENT_ITEM_ADDED_TO_LIST,
+                    {
+                        "item_name": item_name,
+                        "inventory_id": item_data.get("inventory_id", ""),
+                        "quantity": quantity,
+                        "todo_list": todo_list,
+                        "quantity_needed": quantity_needed,
+                    },
+                )
 
             return True
 
@@ -337,6 +349,15 @@ class TodoManager:
             if desired_quantity > 0:
                 if quantity >= desired_quantity:
                     await self._remove_todo_item(todo_list, matching_item)
+                    self.hass.bus.async_fire(
+                        EVENT_ITEM_REMOVED_FROM_LIST,
+                        {
+                            "item_name": item_name,
+                            "inventory_id": item_data.get("inventory_id", ""),
+                            "quantity": quantity,
+                            "todo_list": todo_list,
+                        },
+                    )
                     return True
                 return False
 
@@ -346,6 +367,15 @@ class TodoManager:
 
             if quantity_needed <= 0:
                 await self._remove_todo_item(todo_list, matching_item)
+                self.hass.bus.async_fire(
+                    EVENT_ITEM_REMOVED_FROM_LIST,
+                    {
+                        "item_name": item_name,
+                        "inventory_id": item_data.get("inventory_id", ""),
+                        "quantity": quantity,
+                        "todo_list": todo_list,
+                    },
+                )
             else:
                 if placement == "name":
                     new_name = self._build_todo_item_name(item_name, quantity_needed)

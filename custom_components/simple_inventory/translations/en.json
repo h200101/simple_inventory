@@ -148,6 +148,24 @@
       },
       "name": "Decrement Item"
     },
+    "get_item_consumption_rates": {
+      "description": "Get consumption analytics for a specific item based on its decrement history",
+      "fields": {
+        "inventory_id": {
+          "description": "ID of the inventory",
+          "name": "Inventory ID"
+        },
+        "name": {
+          "description": "Name of the item",
+          "name": "Item Name"
+        },
+        "window_days": {
+          "description": "Number of days to look back for consumption data (omit for all history)",
+          "name": "Window Days"
+        }
+      },
+      "name": "Get Item Consumption Rates"
+    },
     "get_items": {
       "description": "Return the full list of items for an inventory. Can specify either inventory_id or inventory_name.",
       "fields": {

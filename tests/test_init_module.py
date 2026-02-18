@@ -13,6 +13,7 @@ from custom_components.simple_inventory.const import (
     SERVICE_ADD_ITEM,
     SERVICE_DECREMENT_ITEM,
     SERVICE_GET_ALL_ITEMS,
+    SERVICE_GET_ITEM_CONSUMPTION_RATES,
     SERVICE_GET_ITEMS,
     SERVICE_INCREMENT_ITEM,
     SERVICE_REMOVE_ITEM,
@@ -119,6 +120,7 @@ async def test_async_setup_entry_first_creates_repo_and_registers_services(
             SERVICE_DECREMENT_ITEM,
             SERVICE_GET_ITEMS,
             SERVICE_GET_ALL_ITEMS,
+            SERVICE_GET_ITEM_CONSUMPTION_RATES,
         }
 
         # Domain data contains coordinator
@@ -241,6 +243,7 @@ async def test_async_unload_entry_last_removes_services_and_closes_repo(
         SERVICE_UPDATE_ITEM,
         SERVICE_GET_ITEMS,
         SERVICE_GET_ALL_ITEMS,
+        SERVICE_GET_ITEM_CONSUMPTION_RATES,
     }
 
     repo.async_close.assert_awaited_once()

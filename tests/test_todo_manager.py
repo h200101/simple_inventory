@@ -8,6 +8,8 @@ from homeassistant.components.todo import TodoItem, TodoItemStatus
 from typing_extensions import Self
 
 from custom_components.simple_inventory.const import (
+    EVENT_ITEM_ADDED_TO_LIST,
+    EVENT_ITEM_REMOVED_FROM_LIST,
     FIELD_DESIRED_QUANTITY,
     FIELD_TODO_QUANTITY_PLACEMENT,
 )
@@ -1012,3 +1014,154 @@ class TestTodoManager:
             mock_update.assert_called_once_with(
                 "todo.bring_list", matching_item, "Milk", "Fresh (x2)"
             )
+
+    # --- HA event tests ---
+
+    @pytest.mark.asyncio
+    async def test_event_fires_on_new_todo_add(self, todo_manager: TodoManager) -> None:
+        """Test EVENT_ITEM_ADDED_TO_LIST fires only when item is newly added."""
+        item_data: InventoryItem = {
+            "auto_add_enabled": True,
+            "quantity": 2,
+            "auto_add_to_list_quantity": 5,
+            "todo_list": "todo.shopping_list",
+            "inventory_id": "kitchen_123",
+        }
+
+        with (
+            patch.object(
+                todo_manager,
+                "_get_incomplete_items",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(todo_manager.hass.services, "async_call", new=AsyncMock()),
+            patch.object(todo_manager.hass.bus, "async_fire") as mock_fire,
+        ):
+            result = await todo_manager.check_and_add_item("Bread", item_data)
+
+            assert result is True
+            mock_fire.assert_called_once()
+            call_args = mock_fire.call_args
+            assert call_args[0][0] == EVENT_ITEM_ADDED_TO_LIST
+            payload = call_args[0][1]
+            assert payload["item_name"] == "Bread"
+            assert payload["inventory_id"] == "kitchen_123"
+            assert payload["todo_list"] == "todo.shopping_list"
+            assert payload["quantity_needed"] == 4  # 5 - 2 + 1
+
+    @pytest.mark.asyncio
+    async def test_event_does_not_fire_on_todo_update(self, todo_manager: TodoManager) -> None:
+        """Test EVENT_ITEM_ADDED_TO_LIST does NOT fire when updating existing item."""
+        item_data: InventoryItem = {
+            "auto_add_enabled": True,
+            "quantity": 2,
+            "auto_add_to_list_quantity": 5,
+            "todo_list": "todo.shopping_list",
+        }
+
+        with (
+            patch.object(
+                todo_manager,
+                "_get_incomplete_items",
+                new=AsyncMock(
+                    return_value=[{"summary": "Bread (x4)", "status": "needs_action", "uid": "1"}]
+                ),
+            ),
+            patch.object(todo_manager.hass.services, "async_call", new=AsyncMock()),
+            patch.object(todo_manager.hass.bus, "async_fire") as mock_fire,
+        ):
+            result = await todo_manager.check_and_add_item("Bread", item_data)
+
+            assert result is True
+            mock_fire.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_event_fires_on_todo_remove_legacy(self, todo_manager: TodoManager) -> None:
+        """Test EVENT_ITEM_REMOVED_FROM_LIST fires on legacy removal."""
+        item_data: InventoryItem = {
+            "auto_add_enabled": True,
+            "quantity": 10,
+            "auto_add_to_list_quantity": 2,
+            "todo_list": "todo.shopping_list",
+            "inventory_id": "kitchen_123",
+        }
+
+        matching_item = {"summary": "Bread", "uid": "123"}
+
+        with (
+            patch.object(
+                todo_manager,
+                "_find_matching_incomplete_item",
+                new=AsyncMock(return_value=matching_item),
+            ),
+            patch.object(todo_manager, "_remove_todo_item", new=AsyncMock()),
+            patch.object(todo_manager.hass.bus, "async_fire") as mock_fire,
+        ):
+            result = await todo_manager.check_and_remove_item("Bread", item_data)
+
+            assert result is True
+            mock_fire.assert_called_once()
+            call_args = mock_fire.call_args
+            assert call_args[0][0] == EVENT_ITEM_REMOVED_FROM_LIST
+            payload = call_args[0][1]
+            assert payload["item_name"] == "Bread"
+            assert payload["todo_list"] == "todo.shopping_list"
+
+    @pytest.mark.asyncio
+    async def test_event_fires_on_todo_remove_desired_quantity(
+        self, todo_manager: TodoManager
+    ) -> None:
+        """Test EVENT_ITEM_REMOVED_FROM_LIST fires on desired_quantity removal."""
+        item_data: InventoryItem = {
+            "auto_add_enabled": True,
+            "quantity": 10,
+            "auto_add_to_list_quantity": 3,
+            FIELD_DESIRED_QUANTITY: 10,
+            "todo_list": "todo.shopping_list",
+            "inventory_id": "kitchen_123",
+        }
+
+        matching_item = {"summary": "Bread (x10)", "uid": "123"}
+
+        with (
+            patch.object(
+                todo_manager,
+                "_find_matching_incomplete_item",
+                new=AsyncMock(return_value=matching_item),
+            ),
+            patch.object(todo_manager, "_remove_todo_item", new=AsyncMock()),
+            patch.object(todo_manager.hass.bus, "async_fire") as mock_fire,
+        ):
+            result = await todo_manager.check_and_remove_item("Bread", item_data)
+
+            assert result is True
+            mock_fire.assert_called_once()
+            assert mock_fire.call_args[0][0] == EVENT_ITEM_REMOVED_FROM_LIST
+
+    @pytest.mark.asyncio
+    async def test_event_does_not_fire_on_todo_update_not_remove(
+        self, todo_manager: TodoManager
+    ) -> None:
+        """Test no removal event fires when quantity is updated but not removed."""
+        item_data: InventoryItem = {
+            "auto_add_enabled": True,
+            "quantity": 1,
+            "auto_add_to_list_quantity": 2,
+            "todo_list": "todo.shopping_list",
+        }
+
+        matching_item = {"summary": "Bread (x2)", "uid": "123"}
+
+        with (
+            patch.object(
+                todo_manager,
+                "_find_matching_incomplete_item",
+                new=AsyncMock(return_value=matching_item),
+            ),
+            patch.object(todo_manager, "_update_todo_item", new=AsyncMock()),
+            patch.object(todo_manager.hass.bus, "async_fire") as mock_fire,
+        ):
+            result = await todo_manager.check_and_remove_item("Bread", item_data)
+
+            assert result is True
+            mock_fire.assert_not_called()

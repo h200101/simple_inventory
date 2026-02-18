@@ -11,6 +11,7 @@ SERVICE_REMOVE_ITEM: Final = "remove_item"
 SERVICE_UPDATE_ITEM: Final = "update_item"
 SERVICE_GET_ITEMS: Final = "get_items"
 SERVICE_GET_ALL_ITEMS: Final = "get_items_from_all_inventories"
+SERVICE_GET_ITEM_CONSUMPTION_RATES: Final = "get_item_consumption_rates"
 
 # Item Fields (for data structure), needs to match params constants in frontend
 FIELD_AUTO_ADD_ENABLED: Final = "auto_add_enabled"
@@ -51,6 +52,17 @@ DEFAULT_TODO_LIST: Final = ""
 DEFAULT_TODO_QUANTITY_PLACEMENT: Final = "name"
 DEFAULT_UNIT: Final = ""
 DEFAULT_LOCATION: Final = ""
+
+ANALYTICS_MIN_EVENTS: Final = 2
+
+# HA events
+EVENT_ITEM_ADDED_TO_LIST: Final = f"{DOMAIN}_item_added_to_list"
+EVENT_ITEM_REMOVED_FROM_LIST: Final = f"{DOMAIN}_item_removed_from_list"
+EVENT_ITEM_DEPLETED: Final = f"{DOMAIN}_item_depleted"
+EVENT_ITEM_RESTOCKED: Final = f"{DOMAIN}_item_restocked"
+EVENT_ITEM_ADDED: Final = f"{DOMAIN}_item_added"
+EVENT_ITEM_REMOVED: Final = f"{DOMAIN}_item_removed"
+EVENT_ITEM_QUANTITY_CHANGED: Final = f"{DOMAIN}_item_quantity_changed"
 
 INVENTORY_CONFIG: Final = "config"
 INVENTORY_ITEMS: Final = "items"

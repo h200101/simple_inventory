@@ -330,7 +330,8 @@ update_item:
             - "none"
 
 get_items:
-  description: Return the full list of items for an inventory. Use return_response. Can specify either inventory_id or inventory_name (but not both).
+  description: Return the full list of items for an inventory. Can specify either inventory_id or inventory_name (but not both).
+  supports_response: optional
   fields:
     inventory_id:
       description: ID of the inventory
@@ -346,5 +347,31 @@ get_items:
         text:
 
 get_items_from_all_inventories:
-  description: Return the full list of items grouped by inventory. Use return_response.
+  description: Return the full list of items grouped by inventory.
+  supports_response: optional
   fields: {}
+
+get_item_consumption_rates:
+  description: Get consumption analytics for a specific item based on its decrement history. Returns daily/weekly rates, days until depletion, and average restock interval.
+  supports_response: optional
+  fields:
+    inventory_id:
+      description: ID of the inventory
+      example: "01JYFPCDMBRBRK4MB3C26S2FKH"
+      required: true
+      selector:
+        text:
+    name:
+      description: Name of the item
+      example: "Frozen Pizza"
+      required: true
+      selector:
+        text:
+    window_days:
+      description: Number of days to look back for consumption data. Omit to use all history.
+      example: 30
+      required: false
+      selector:
+        number:
+          min: 1
+          step: 1

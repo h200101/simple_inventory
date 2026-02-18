@@ -1230,3 +1230,144 @@ class InventoryRepository:
         await cursor.close()
 
         return {row[0]: int(row[1]) for row in rows}
+
+    async def get_item_consumption_stats(
+        self,
+        item_id: str,
+        *,
+        window_days: int | None = None,
+    ) -> dict[str, Any]:
+        """Return raw consumption aggregates for a single item."""
+        conn = self._connection()
+
+        if window_days is not None:
+            window_start = (datetime.utcnow() - timedelta(days=window_days)).isoformat()
+        else:
+            window_start = ""
+
+        cursor = await conn.execute(
+            """
+            WITH
+            decrements AS (
+                SELECT COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total,
+                       MIN(timestamp) AS first_ts, MAX(timestamp) AS last_ts
+                FROM consumption_history
+                WHERE item_id = ? AND event_type = 'decrement'
+                  AND (? = '' OR timestamp >= ?)
+            ),
+            restocks AS (
+                SELECT timestamp FROM consumption_history
+                WHERE item_id = ? AND event_type IN ('increment', 'add')
+                  AND (? = '' OR timestamp >= ?)
+                ORDER BY timestamp
+            )
+            SELECT d.cnt, d.total, d.first_ts, d.last_ts,
+                   (SELECT COUNT(*) FROM restocks),
+                   (SELECT GROUP_CONCAT(timestamp, '|') FROM restocks)
+            FROM decrements d
+            """,
+            (
+                item_id,
+                window_start,
+                window_start,
+                item_id,
+                window_start,
+                window_start,
+            ),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+
+        restock_ts_raw = row[5] or ""
+        restock_timestamps = [ts for ts in restock_ts_raw.split("|") if ts]
+
+        return {
+            "item_id": item_id,
+            "window_days": window_days,
+            "window_start": window_start,
+            "decrement_count": int(row[0]),
+            "total_consumed": float(row[1]),
+            "first_event_ts": row[2],
+            "last_event_ts": row[3],
+            "restock_count": int(row[4]),
+            "restock_timestamps": restock_timestamps,
+        }
+
+    async def get_inventory_consumption_stats(
+        self,
+        inventory_id: str,
+        *,
+        window_days: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return consumption aggregates for all items in an inventory."""
+        conn = self._connection()
+
+        if window_days is not None:
+            window_start = (datetime.utcnow() - timedelta(days=window_days)).isoformat()
+        else:
+            window_start = ""
+
+        cursor = await conn.execute(
+            """
+            WITH
+            consumption AS (
+                SELECT item_id, COUNT(*) AS cnt, SUM(amount) AS total,
+                       MIN(timestamp) AS first_ts, MAX(timestamp) AS last_ts
+                FROM consumption_history
+                WHERE inventory_id = ? AND event_type = 'decrement'
+                  AND (? = '' OR timestamp >= ?)
+                GROUP BY item_id
+            ),
+            restocks AS (
+                SELECT item_id, COUNT(*) AS cnt,
+                       GROUP_CONCAT(timestamp, '|') AS timestamps
+                FROM consumption_history
+                WHERE inventory_id = ? AND event_type IN ('increment', 'add')
+                  AND (? = '' OR timestamp >= ?)
+                GROUP BY item_id
+            )
+            SELECT i.id, i.name, i.quantity, i.unit,
+                   COALESCE(c.cnt, 0), COALESCE(c.total, 0),
+                   c.first_ts, c.last_ts,
+                   COALESCE(r.cnt, 0), r.timestamps
+            FROM items i
+            LEFT JOIN consumption c ON c.item_id = i.id
+            LEFT JOIN restocks r ON r.item_id = i.id
+            WHERE i.inventory_id = ?
+            ORDER BY LOWER(i.name)
+            """,
+            (
+                inventory_id,
+                window_start,
+                window_start,
+                inventory_id,
+                window_start,
+                window_start,
+                inventory_id,
+            ),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            restock_ts_raw = row[9] or ""
+            restock_timestamps = [ts for ts in restock_ts_raw.split("|") if ts]
+            results.append(
+                {
+                    "item_id": row[0],
+                    "item_name": row[1],
+                    "current_quantity": float(row[2]),
+                    "unit": row[3] or "",
+                    "window_days": window_days,
+                    "window_start": window_start,
+                    "decrement_count": int(row[4]),
+                    "total_consumed": float(row[5]),
+                    "first_event_ts": row[6],
+                    "last_event_ts": row[7],
+                    "restock_count": int(row[8]),
+                    "restock_timestamps": restock_timestamps,
+                }
+            )
+
+        return results
