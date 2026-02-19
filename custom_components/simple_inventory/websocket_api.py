@@ -23,6 +23,10 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_get_history)
     websocket_api.async_register_command(hass, ws_export)
     websocket_api.async_register_command(hass, ws_import)
+    websocket_api.async_register_command(hass, ws_get_item_consumption_rates)
+    websocket_api.async_register_command(hass, ws_get_inventory_consumption_rates)
+    websocket_api.async_register_command(hass, ws_lookup_by_barcode)
+    websocket_api.async_register_command(hass, ws_scan_barcode)
 
 
 async def _handle_list_items(
@@ -288,6 +292,63 @@ async def ws_get_history(
     await _handle_get_history(hass, connection, msg)
 
 
+async def _handle_get_item_consumption_rates(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Return consumption rates for a single item."""
+    inventory_id = msg["inventory_id"]
+    item_name = msg["item_name"]
+    window_days = msg.get("window_days")
+
+    coordinator = get_coordinators(hass).get(inventory_id)
+    if coordinator is None:
+        connection.send_error(
+            msg["id"],
+            "inventory_not_found",
+            f"Inventory '{inventory_id}' not found",
+        )
+        return
+
+    result = await coordinator.async_get_item_consumption_rates(
+        inventory_id, item_name, window_days=window_days
+    )
+    if result is None:
+        connection.send_error(
+            msg["id"],
+            "item_not_found",
+            f"Item '{item_name}' not found in inventory '{inventory_id}'",
+        )
+        return
+
+    connection.send_result(msg["id"], result)
+
+
+async def _handle_get_inventory_consumption_rates(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Return consumption rates for all items in an inventory."""
+    inventory_id = msg["inventory_id"]
+    window_days = msg.get("window_days")
+
+    coordinator = get_coordinators(hass).get(inventory_id)
+    if coordinator is None:
+        connection.send_error(
+            msg["id"],
+            "inventory_not_found",
+            f"Inventory '{inventory_id}' not found",
+        )
+        return
+
+    result = await coordinator.async_get_inventory_consumption_rates(
+        inventory_id, window_days=window_days
+    )
+    connection.send_result(msg["id"], result)
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): f"{DOMAIN}/subscribe",
@@ -302,3 +363,125 @@ def ws_subscribe(
 ) -> None:
     """WS command: subscribe."""
     _handle_subscribe(hass, connection, msg)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/get_item_consumption_rates",
+        vol.Required("inventory_id"): str,
+        vol.Required("item_name"): str,
+        vol.Optional("window_days"): vol.Any(vol.In([30, 60, 90]), None),
+    }
+)
+@websocket_api.async_response
+async def ws_get_item_consumption_rates(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """WS command: get item consumption rates."""
+    await _handle_get_item_consumption_rates(hass, connection, msg)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/get_inventory_consumption_rates",
+        vol.Required("inventory_id"): str,
+        vol.Optional("window_days"): vol.Any(vol.In([30, 60, 90]), None),
+    }
+)
+@websocket_api.async_response
+async def ws_get_inventory_consumption_rates(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """WS command: get inventory consumption rates."""
+    await _handle_get_inventory_consumption_rates(hass, connection, msg)
+
+
+async def _handle_lookup_by_barcode(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Look up an item by barcode across all inventories."""
+    barcode = msg["barcode"]
+    coordinators = get_coordinators(hass)
+    if not coordinators:
+        connection.send_error(msg["id"], "no_inventories", "No inventories configured")
+        return
+
+    coordinator = next(iter(coordinators.values()))
+    results = await coordinator.async_lookup_by_barcode(barcode)
+    connection.send_result(msg["id"], {"items": results})
+
+
+async def _handle_scan_barcode(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Scan a barcode and perform an action."""
+    barcode = msg["barcode"]
+    action = msg["action"]
+    amount = msg.get("amount", 1.0)
+    inventory_id = msg.get("inventory_id")
+
+    coordinators = get_coordinators(hass)
+    if not coordinators:
+        connection.send_error(msg["id"], "no_inventories", "No inventories configured")
+        return
+
+    if inventory_id:
+        coordinator = coordinators.get(inventory_id)
+        if coordinator is None:
+            connection.send_error(
+                msg["id"],
+                "inventory_not_found",
+                f"Inventory '{inventory_id}' not found",
+            )
+            return
+    else:
+        coordinator = next(iter(coordinators.values()))
+
+    try:
+        result = await coordinator.async_scan_barcode(barcode, action, amount, inventory_id)
+        connection.send_result(msg["id"], result)
+    except ValueError as exc:
+        connection.send_error(msg["id"], "scan_failed", str(exc))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/lookup_by_barcode",
+        vol.Required("barcode"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_lookup_by_barcode(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """WS command: lookup by barcode."""
+    await _handle_lookup_by_barcode(hass, connection, msg)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/scan_barcode",
+        vol.Required("barcode"): str,
+        vol.Required("action"): vol.In(["increment", "decrement", "lookup"]),
+        vol.Optional("amount", default=1.0): float,
+        vol.Optional("inventory_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_scan_barcode(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """WS command: scan barcode."""
+    await _handle_scan_barcode(hass, connection, msg)

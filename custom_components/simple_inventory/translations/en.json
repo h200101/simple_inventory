@@ -148,6 +148,24 @@
       },
       "name": "Decrement Item"
     },
+    "get_item_consumption_rates": {
+      "description": "Get consumption analytics for a specific item based on its decrement history",
+      "fields": {
+        "inventory_id": {
+          "description": "ID of the inventory",
+          "name": "Inventory ID"
+        },
+        "name": {
+          "description": "Name of the item",
+          "name": "Item Name"
+        },
+        "window_days": {
+          "description": "Number of days to look back for consumption data (omit for all history)",
+          "name": "Window Days"
+        }
+      },
+      "name": "Get Item Consumption Rates"
+    },
     "get_items": {
       "description": "Return the full list of items for an inventory. Can specify either inventory_id or inventory_name.",
       "fields": {
@@ -189,6 +207,16 @@
       },
       "name": "Increment Item"
     },
+    "lookup_by_barcode": {
+      "description": "Look up an item by barcode across all inventories",
+      "fields": {
+        "barcode": {
+          "description": "Barcode to search for (UPC, EAN, etc.)",
+          "name": "Barcode"
+        }
+      },
+      "name": "Lookup by Barcode"
+    },
     "remove_item": {
       "description": "Remove an item from an inventory",
       "fields": {
@@ -206,6 +234,28 @@
         }
       },
       "name": "Remove Item"
+    },
+    "scan_barcode": {
+      "description": "Scan a barcode and perform an action (increment, decrement, or lookup)",
+      "fields": {
+        "action": {
+          "description": "Action to perform on the matched item",
+          "name": "Action"
+        },
+        "amount": {
+          "description": "Amount to increment or decrement by",
+          "name": "Amount"
+        },
+        "barcode": {
+          "description": "Barcode to scan (UPC, EAN, etc.)",
+          "name": "Barcode"
+        },
+        "inventory_id": {
+          "description": "Optional inventory ID to scope the search",
+          "name": "Inventory ID"
+        }
+      },
+      "name": "Scan Barcode"
     },
     "update_item": {
       "description": "Update an existing inventory item",

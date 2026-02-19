@@ -9,25 +9,31 @@ from typing import Any
 
 import homeassistant.helpers.config_validation as cv
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 
 from .const import (
     DOMAIN,
     SERVICE_ADD_ITEM,
     SERVICE_DECREMENT_ITEM,
     SERVICE_GET_ALL_ITEMS,
+    SERVICE_GET_ITEM_CONSUMPTION_RATES,
     SERVICE_GET_ITEMS,
     SERVICE_INCREMENT_ITEM,
+    SERVICE_LOOKUP_BY_BARCODE,
     SERVICE_REMOVE_ITEM,
+    SERVICE_SCAN_BARCODE,
     SERVICE_UPDATE_ITEM,
 )
 from .coordinator import SimpleInventoryCoordinator
 from .schemas.service_schemas import (
     ADD_ITEM_SCHEMA,
     GET_ALL_ITEMS_SCHEMA,
+    GET_ITEM_CONSUMPTION_RATES_SCHEMA,
     GET_ITEMS_SCHEMA,
+    LOOKUP_BY_BARCODE_SCHEMA,
     QUANTITY_UPDATE_SCHEMA,
     REMOVE_ITEM_SCHEMA,
+    SCAN_BARCODE_SCHEMA,
     UPDATE_ITEM_SCHEMA,
 )
 from .services import ServiceHandler
@@ -114,12 +120,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             SERVICE_GET_ITEMS,
             service_handler.async_get_items,
             GET_ITEMS_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
         )
         _register_service(
             hass,
             SERVICE_GET_ALL_ITEMS,
             service_handler.async_get_items_from_all_inventories,
             GET_ALL_ITEMS_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        _register_service(
+            hass,
+            SERVICE_GET_ITEM_CONSUMPTION_RATES,
+            service_handler.async_get_item_consumption_rates,
+            GET_ITEM_CONSUMPTION_RATES_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        _register_service(
+            hass,
+            SERVICE_LOOKUP_BY_BARCODE,
+            service_handler.async_lookup_by_barcode,
+            LOOKUP_BY_BARCODE_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        _register_service(
+            hass,
+            SERVICE_SCAN_BARCODE,
+            service_handler.async_scan_barcode,
+            SCAN_BARCODE_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
         )
 
         async_register_websocket_commands(hass)
@@ -151,10 +180,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 def _register_service(
     hass: HomeAssistant,
     name: str,
-    handler: Callable[[ServiceCall], Coroutine[Any, Any, None]],
+    handler: Callable[[ServiceCall], Coroutine[Any, Any, Any]],
     schema: Any,
+    supports_response: SupportsResponse = SupportsResponse.NONE,
 ) -> None:
-    hass.services.async_register(DOMAIN, name, handler, schema=schema)
+    hass.services.async_register(
+        DOMAIN,
+        name,
+        handler,
+        schema=schema,
+        supports_response=supports_response,
+    )
 
 
 async def _ensure_global_entry(hass: HomeAssistant) -> None:
@@ -203,6 +239,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _remove_service(hass, SERVICE_UPDATE_ITEM)
         _remove_service(hass, SERVICE_GET_ITEMS)
         _remove_service(hass, SERVICE_GET_ALL_ITEMS)
+        _remove_service(hass, SERVICE_GET_ITEM_CONSUMPTION_RATES)
+        _remove_service(hass, SERVICE_LOOKUP_BY_BARCODE)
+        _remove_service(hass, SERVICE_SCAN_BARCODE)
         domain_data["services_registered"] = False
 
     repository: InventoryRepository | None = domain_data.get("repository")

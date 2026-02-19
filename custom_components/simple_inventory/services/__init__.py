@@ -1,11 +1,14 @@
 """Service handlers for Simple Inventory integration."""
 
 import logging
+from typing import cast
 
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.util.json import JsonObjectType
 
 from ..const import DOMAIN
 from ..todo_manager import TodoManager
+from .domain_data import get_coordinators
 from .inventory_service import InventoryService
 from .quantity_service import QuantityService
 
@@ -46,8 +49,8 @@ class ServiceHandler:
         """Decrement item quantity."""
         await self.quantity_service.async_decrement_item(call)
 
-    async def async_get_items(self, call: ServiceCall) -> None:
-        """Fetch items and fire an event with the result (service-friendly)."""
+    async def async_get_items(self, call: ServiceCall) -> JsonObjectType:
+        """Fetch items, fire an event, and return the result."""
         result = await self.inventory_service.async_get_items(call)
         self.hass.bus.async_fire(
             f"{DOMAIN}_get_items_result",
@@ -58,9 +61,10 @@ class ServiceHandler:
                 "result": result,
             },
         )
+        return result
 
-    async def async_get_items_from_all_inventories(self, call: ServiceCall) -> None:
-        """Fetch all inventories and fire an event with the result (service-friendly)."""
+    async def async_get_items_from_all_inventories(self, call: ServiceCall) -> JsonObjectType:
+        """Fetch all inventories, fire an event, and return the result."""
         result = await self.inventory_service.async_get_items_from_all_inventories(call)
         self.hass.bus.async_fire(
             f"{DOMAIN}_get_all_items_result",
@@ -69,6 +73,58 @@ class ServiceHandler:
                 "result": result,
             },
         )
+        return result
+
+    async def async_lookup_by_barcode(self, call: ServiceCall) -> JsonObjectType:
+        """Look up an item by barcode across all inventories."""
+        barcode: str = call.data["barcode"]
+        coordinators = get_coordinators(self.hass)
+        if not coordinators:
+            raise ValueError("No inventories configured")
+        coordinator = next(iter(coordinators.values()))
+        results = await coordinator.async_lookup_by_barcode(barcode)
+        return cast(JsonObjectType, {"items": results})
+
+    async def async_scan_barcode(self, call: ServiceCall) -> JsonObjectType:
+        """Scan a barcode and perform an action."""
+        data = call.data
+        barcode: str = data["barcode"]
+        action: str = data["action"]
+        amount: float = data.get("amount", 1.0)
+        inventory_id: str | None = data.get("inventory_id")
+
+        coordinators = get_coordinators(self.hass)
+        if not coordinators:
+            raise ValueError("No inventories configured")
+
+        if inventory_id:
+            coordinator = coordinators.get(inventory_id)
+            if coordinator is None:
+                raise ValueError(f"No coordinator available for inventory '{inventory_id}'")
+        else:
+            coordinator = next(iter(coordinators.values()))
+
+        result = await coordinator.async_scan_barcode(barcode, action, amount, inventory_id)
+        return cast(JsonObjectType, result)
+
+    async def async_get_item_consumption_rates(self, call: ServiceCall) -> JsonObjectType:
+        """Return consumption rates for a single item."""
+        data = call.data
+        inventory_id: str = data["inventory_id"]
+        item_name: str = data["name"]
+        window_days: int | None = data.get("window_days")
+
+        coordinators = get_coordinators(self.hass)
+        coordinator = coordinators.get(inventory_id)
+        if coordinator is None:
+            raise ValueError(f"No coordinator available for inventory '{inventory_id}'")
+
+        result = await coordinator.async_get_item_consumption_rates(
+            inventory_id, item_name, window_days=window_days
+        )
+        if result is None:
+            raise ValueError(f"Item '{item_name}' not found in inventory '{inventory_id}'")
+        return cast(JsonObjectType, result)
 
 
 __all__ = ["ServiceHandler", "InventoryService", "QuantityService"]

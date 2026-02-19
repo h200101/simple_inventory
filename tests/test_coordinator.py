@@ -11,6 +11,11 @@ from homeassistant.core import EventBus, HomeAssistant
 
 from custom_components.simple_inventory.const import (
     DOMAIN,
+    EVENT_ITEM_ADDED,
+    EVENT_ITEM_DEPLETED,
+    EVENT_ITEM_QUANTITY_CHANGED,
+    EVENT_ITEM_REMOVED,
+    EVENT_ITEM_RESTOCKED,
     FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED,
     FIELD_DESCRIPTION,
     FIELD_DESIRED_QUANTITY,
@@ -18,7 +23,10 @@ from custom_components.simple_inventory.const import (
     FIELD_QUANTITY,
     FIELD_TODO_QUANTITY_PLACEMENT,
 )
-from custom_components.simple_inventory.coordinator import SimpleInventoryCoordinator
+from custom_components.simple_inventory.coordinator import (
+    SimpleInventoryCoordinator,
+    _compute_avg_restock_days,
+)
 
 
 @pytest.fixture
@@ -87,7 +95,9 @@ def mock_repository(sample_inventory_data: dict) -> MagicMock:
     repo.add_item_barcode = AsyncMock()
     repo.remove_item_barcode = AsyncMock()
     repo.get_item_by_barcode = AsyncMock(return_value=None)
+    repo.get_item_by_barcode_global = AsyncMock(return_value=[])
     repo.get_barcodes_for_item = AsyncMock(return_value=[])
+    repo.set_item_barcodes = AsyncMock()
 
     repo.record_history_event = AsyncMock(return_value="event-id")
     repo.get_item_history = AsyncMock(return_value=[])
@@ -784,8 +794,8 @@ async def test_async_add_item_with_barcode(
         )
 
     assert item_id == "new-item-id"
-    mock_repository.add_item_barcode.assert_awaited_once_with(
-        "new-item-id", "kitchen_123", "123456789012"
+    mock_repository.set_item_barcodes.assert_awaited_once_with(
+        "new-item-id", "kitchen_123", ["123456789012"]
     )
 
 
@@ -802,7 +812,7 @@ async def test_async_add_item_without_barcode_skips_barcode(
             quantity=1,
         )
 
-    mock_repository.add_item_barcode.assert_not_awaited()
+    mock_repository.set_item_barcodes.assert_awaited_once_with("new-item-id", "kitchen_123", [])
 
 
 @pytest.mark.asyncio
@@ -1101,3 +1111,606 @@ async def test_csv_round_trip(
     assert parsed[0]["name"] == "Milk"
     assert parsed[0]["quantity"] == 3.0
     assert parsed[0]["unit"] == "gallons"
+
+
+# ---------------------------------------------------------------------------
+# Consumption analytics: pure function tests
+# ---------------------------------------------------------------------------
+
+
+class TestComputeAvgRestockDays:
+    def test_single_timestamp_returns_none(self) -> None:
+        assert _compute_avg_restock_days(["2025-01-01T00:00:00"]) is None
+
+    def test_two_timestamps_returns_gap(self) -> None:
+        result = _compute_avg_restock_days(
+            [
+                "2025-01-01T00:00:00",
+                "2025-01-11T00:00:00",
+            ]
+        )
+        assert result == 10.0
+
+    def test_multiple_timestamps_returns_average(self) -> None:
+        result = _compute_avg_restock_days(
+            [
+                "2025-01-01T00:00:00",
+                "2025-01-11T00:00:00",
+                "2025-01-21T00:00:00",
+            ]
+        )
+        assert result == 10.0
+
+    def test_unsorted_timestamps_still_works(self) -> None:
+        result = _compute_avg_restock_days(
+            [
+                "2025-01-21T00:00:00",
+                "2025-01-01T00:00:00",
+                "2025-01-11T00:00:00",
+            ]
+        )
+        assert result == 10.0
+
+    def test_empty_list_returns_none(self) -> None:
+        assert _compute_avg_restock_days([]) is None
+
+
+class TestComputeConsumptionRates:
+    def test_sufficient_data_correct_rates(self) -> None:
+        raw = {
+            "decrement_count": 5,
+            "total_consumed": 10.0,
+            "window_days": 30,
+            "first_event_ts": "2025-01-01T00:00:00",
+            "last_event_ts": "2025-01-30T00:00:00",
+            "restock_timestamps": [
+                "2025-01-05T00:00:00",
+                "2025-01-15T00:00:00",
+            ],
+        }
+        result = SimpleInventoryCoordinator._compute_consumption_rates(raw, 5.0)
+
+        assert result["has_sufficient_data"] is True
+        expected_daily = round(10.0 / 30, 4)
+        assert result["daily_rate"] == expected_daily
+        assert result["weekly_rate"] == round(expected_daily * 7, 4)
+        assert result["days_until_depletion"] is not None
+        assert result["avg_restock_days"] == 10.0
+
+    def test_insufficient_data_returns_none_rates(self) -> None:
+        raw = {
+            "decrement_count": 1,
+            "total_consumed": 1.0,
+            "window_days": 30,
+            "first_event_ts": "2025-01-01T00:00:00",
+            "last_event_ts": "2025-01-01T00:00:00",
+            "restock_timestamps": [],
+        }
+        result = SimpleInventoryCoordinator._compute_consumption_rates(raw, 5.0)
+
+        assert result["has_sufficient_data"] is False
+        assert result["daily_rate"] is None
+        assert result["weekly_rate"] is None
+        assert result["days_until_depletion"] is None
+
+    def test_zero_consumed_no_depletion(self) -> None:
+        raw = {
+            "decrement_count": 3,
+            "total_consumed": 0.0,
+            "window_days": 30,
+            "first_event_ts": "2025-01-01T00:00:00",
+            "last_event_ts": "2025-01-30T00:00:00",
+            "restock_timestamps": [],
+        }
+        result = SimpleInventoryCoordinator._compute_consumption_rates(raw, 5.0)
+
+        assert result["has_sufficient_data"] is True
+        assert result["daily_rate"] is None
+        assert result["days_until_depletion"] is None
+
+    def test_no_window_uses_span_from_first_event(self) -> None:
+        now = datetime.utcnow()
+        first = (now - timedelta(days=50)).isoformat()
+        raw: dict[str, Any] = {
+            "decrement_count": 5,
+            "total_consumed": 10.0,
+            "window_days": None,
+            "first_event_ts": first,
+            "last_event_ts": now.isoformat(),
+            "restock_timestamps": [],
+        }
+        result = SimpleInventoryCoordinator._compute_consumption_rates(raw, 5.0)
+
+        assert result["has_sufficient_data"] is True
+        assert result["daily_rate"] is not None
+        # Rate should be ~0.2/day (10 consumed / 50 days)
+        assert 0.15 < result["daily_rate"] < 0.25
+
+
+# ---------------------------------------------------------------------------
+# Consumption analytics: coordinator method tests (mocked repo)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_get_item_consumption_rates_unknown_item(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(return_value=None)
+
+    result = await coordinator.async_get_item_consumption_rates("kitchen_123", "nope")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_async_get_item_consumption_rates_known_item(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 5.0, "unit": "liters"}
+    )
+    mock_repository.get_item_consumption_stats = AsyncMock(
+        return_value={
+            "item_id": "milk-id",
+            "window_days": 30,
+            "window_start": "2025-01-01T00:00:00",
+            "decrement_count": 10,
+            "total_consumed": 20.0,
+            "first_event_ts": "2025-01-01T00:00:00",
+            "last_event_ts": "2025-01-30T00:00:00",
+            "restock_count": 2,
+            "restock_timestamps": ["2025-01-10T00:00:00", "2025-01-20T00:00:00"],
+        }
+    )
+
+    result = await coordinator.async_get_item_consumption_rates(
+        "kitchen_123", "Milk", window_days=30
+    )
+
+    assert result is not None
+    assert result["item_name"] == "Milk"
+    assert result["current_quantity"] == 5.0
+    assert result["unit"] == "liters"
+    assert result["has_sufficient_data"] is True
+    assert result["daily_rate"] is not None
+
+
+@pytest.mark.asyncio
+async def test_async_get_inventory_consumption_rates_shape(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_inventory_consumption_stats = AsyncMock(
+        return_value=[
+            {
+                "item_id": "a",
+                "item_name": "Apple",
+                "current_quantity": 10.0,
+                "unit": "pcs",
+                "window_days": 30,
+                "window_start": "",
+                "decrement_count": 5,
+                "total_consumed": 15.0,
+                "first_event_ts": "2025-01-01T00:00:00",
+                "last_event_ts": "2025-01-30T00:00:00",
+                "restock_count": 0,
+                "restock_timestamps": [],
+            },
+            {
+                "item_id": "b",
+                "item_name": "Banana",
+                "current_quantity": 2.0,
+                "unit": "pcs",
+                "window_days": 30,
+                "window_start": "",
+                "decrement_count": 3,
+                "total_consumed": 6.0,
+                "first_event_ts": "2025-01-05T00:00:00",
+                "last_event_ts": "2025-01-25T00:00:00",
+                "restock_count": 0,
+                "restock_timestamps": [],
+            },
+            {
+                "item_id": "c",
+                "item_name": "Cherry",
+                "current_quantity": 5.0,
+                "unit": "",
+                "window_days": 30,
+                "window_start": "",
+                "decrement_count": 0,
+                "total_consumed": 0.0,
+                "first_event_ts": None,
+                "last_event_ts": None,
+                "restock_count": 0,
+                "restock_timestamps": [],
+            },
+        ]
+    )
+
+    result = await coordinator.async_get_inventory_consumption_rates("kitchen_123", window_days=30)
+
+    assert result["inventory_id"] == "kitchen_123"
+    assert result["window_days"] == 30
+    assert len(result["items"]) == 3
+    assert result["summary"]["total_items_tracked"] == 2
+    assert result["summary"]["total_consumed"] == 21.0
+
+    # most_consumed sorted desc
+    most = result["summary"]["most_consumed"]
+    assert most[0]["item_name"] == "Apple"
+    assert most[1]["item_name"] == "Banana"
+
+    # running_out_soonest sorted asc, Cherry excluded (no rate)
+    running_out = result["summary"]["running_out_soonest"]
+    assert len(running_out) >= 1
+    assert all(r["days_until_depletion"] is not None for r in running_out)
+
+
+# ---------------------------------------------------------------------------
+# HA event tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_event_item_added_fires(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.create_item.reset_mock()
+
+    with patch.object(EventBus, "async_fire") as mock_fire:
+        await coordinator.async_add_item("kitchen_123", name="Apple", quantity=3)
+
+    event_calls = [c for c in mock_fire.call_args_list if c[0][0] == EVENT_ITEM_ADDED]
+    assert len(event_calls) == 1
+    payload = event_calls[0][0][1]
+    assert payload["item_name"] == "Apple"
+    assert payload["inventory_id"] == "kitchen_123"
+    assert payload["quantity"] == 3
+
+
+@pytest.mark.asyncio
+async def test_event_item_removed_fires(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(return_value={"id": "x", "name": "Milk"})
+
+    with patch.object(EventBus, "async_fire") as mock_fire:
+        ok = await coordinator.async_remove_item("kitchen_123", "Milk")
+
+    assert ok is True
+    event_calls = [c for c in mock_fire.call_args_list if c[0][0] == EVENT_ITEM_REMOVED]
+    assert len(event_calls) == 1
+    payload = event_calls[0][0][1]
+    assert payload["item_name"] == "Milk"
+    assert payload["inventory_id"] == "kitchen_123"
+
+
+@pytest.mark.asyncio
+async def test_event_item_removed_does_not_fire_when_missing(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(return_value=None)
+
+    with patch.object(EventBus, "async_fire") as mock_fire:
+        ok = await coordinator.async_remove_item("kitchen_123", "nope")
+
+    assert ok is False
+    event_calls = [c for c in mock_fire.call_args_list if c[0][0] == EVENT_ITEM_REMOVED]
+    assert len(event_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_event_item_depleted_fires(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 1}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire") as mock_fire:
+        ok = await coordinator.async_decrement_item("kitchen_123", "Milk", 1)
+
+    assert ok is True
+    depleted_calls = [c for c in mock_fire.call_args_list if c[0][0] == EVENT_ITEM_DEPLETED]
+    assert len(depleted_calls) == 1
+    payload = depleted_calls[0][0][1]
+    assert payload["item_name"] == "Milk"
+    assert payload["previous_quantity"] == 1
+
+
+@pytest.mark.asyncio
+async def test_event_item_depleted_does_not_fire_when_not_zero(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 5}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire") as mock_fire:
+        await coordinator.async_decrement_item("kitchen_123", "Milk", 2)
+
+    depleted_calls = [c for c in mock_fire.call_args_list if c[0][0] == EVENT_ITEM_DEPLETED]
+    assert len(depleted_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_event_item_restocked_fires(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 0}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire") as mock_fire:
+        ok = await coordinator.async_increment_item("kitchen_123", "Milk", 3)
+
+    assert ok is True
+    restocked_calls = [c for c in mock_fire.call_args_list if c[0][0] == EVENT_ITEM_RESTOCKED]
+    assert len(restocked_calls) == 1
+    payload = restocked_calls[0][0][1]
+    assert payload["item_name"] == "Milk"
+    assert payload["quantity"] == 3
+
+
+@pytest.mark.asyncio
+async def test_event_item_restocked_does_not_fire_when_already_stocked(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 2}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire") as mock_fire:
+        await coordinator.async_increment_item("kitchen_123", "Milk", 3)
+
+    restocked_calls = [c for c in mock_fire.call_args_list if c[0][0] == EVENT_ITEM_RESTOCKED]
+    assert len(restocked_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_event_quantity_changed_fires_on_increment(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 2}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire") as mock_fire:
+        await coordinator.async_increment_item("kitchen_123", "Milk", 3)
+
+    qty_calls = [c for c in mock_fire.call_args_list if c[0][0] == EVENT_ITEM_QUANTITY_CHANGED]
+    assert len(qty_calls) == 1
+    payload = qty_calls[0][0][1]
+    assert payload["item_name"] == "Milk"
+    assert payload["inventory_id"] == "kitchen_123"
+    assert payload["quantity_before"] == 2
+    assert payload["quantity_after"] == 5
+    assert payload["amount"] == 3
+    assert payload["direction"] == "increment"
+
+
+@pytest.mark.asyncio
+async def test_event_quantity_changed_fires_on_decrement(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 5}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire") as mock_fire:
+        await coordinator.async_decrement_item("kitchen_123", "Milk", 2)
+
+    qty_calls = [c for c in mock_fire.call_args_list if c[0][0] == EVENT_ITEM_QUANTITY_CHANGED]
+    assert len(qty_calls) == 1
+    payload = qty_calls[0][0][1]
+    assert payload["quantity_before"] == 5
+    assert payload["quantity_after"] == 3
+    assert payload["amount"] == 2
+    assert payload["direction"] == "decrement"
+
+
+# ---------------------------------------------------------------------------
+# Barcode lookup & scan tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_barcode_found(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(
+        return_value=[
+            {
+                "id": "item-1",
+                "inventory_id": "kitchen_123",
+                "inventory_name": "Kitchen",
+                FIELD_NAME: "Milk",
+                FIELD_QUANTITY: 3.0,
+            }
+        ]
+    )
+
+    results = await coordinator.async_lookup_by_barcode("123456")
+    assert len(results) == 1
+    assert results[0][FIELD_NAME] == "Milk"
+    mock_repository.get_item_by_barcode_global.assert_awaited_once_with("123456")
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_barcode_not_found(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(return_value=[])
+
+    results = await coordinator.async_lookup_by_barcode("000000")
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_barcode_multiple_inventories(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(
+        return_value=[
+            {"id": "a", "inventory_id": "inv1", "inventory_name": "Kitchen", FIELD_NAME: "Milk"},
+            {"id": "b", "inventory_id": "inv2", "inventory_name": "Pantry", FIELD_NAME: "Milk"},
+        ]
+    )
+
+    results = await coordinator.async_lookup_by_barcode("123456")
+    assert len(results) == 2
+
+
+@pytest.mark.asyncio
+async def test_scan_barcode_increment(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(
+        return_value=[
+            {
+                "id": "milk-id",
+                "inventory_id": "kitchen_123",
+                "inventory_name": "Kitchen",
+                FIELD_NAME: "Milk",
+                FIELD_QUANTITY: 3.0,
+            }
+        ]
+    )
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 3}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire"):
+        result = await coordinator.async_scan_barcode("123456", "increment", 2.0)
+
+    assert result["action"] == "increment"
+    assert result["success"] is True
+    assert result["item_name"] == "Milk"
+    assert result["amount"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_scan_barcode_decrement(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(
+        return_value=[
+            {
+                "id": "milk-id",
+                "inventory_id": "kitchen_123",
+                "inventory_name": "Kitchen",
+                FIELD_NAME: "Milk",
+                FIELD_QUANTITY: 5.0,
+            }
+        ]
+    )
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 5}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire"):
+        result = await coordinator.async_scan_barcode("123456", "decrement", 1.0)
+
+    assert result["action"] == "decrement"
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_scan_barcode_lookup(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(
+        return_value=[
+            {
+                "id": "milk-id",
+                "inventory_id": "kitchen_123",
+                "inventory_name": "Kitchen",
+                FIELD_NAME: "Milk",
+                FIELD_QUANTITY: 3.0,
+            }
+        ]
+    )
+
+    result = await coordinator.async_scan_barcode("123456", "lookup")
+
+    assert result["action"] == "lookup"
+    assert result["item"][FIELD_NAME] == "Milk"
+    assert result["inventory_id"] == "kitchen_123"
+
+
+@pytest.mark.asyncio
+async def test_scan_barcode_with_inventory_id(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode = AsyncMock(
+        return_value={
+            "id": "milk-id",
+            "inventory_id": "kitchen_123",
+            FIELD_NAME: "Milk",
+            FIELD_QUANTITY: 3.0,
+        }
+    )
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 3}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire"):
+        result = await coordinator.async_scan_barcode(
+            "123456", "increment", 1.0, inventory_id="kitchen_123"
+        )
+
+    assert result["action"] == "increment"
+    mock_repository.get_item_by_barcode.assert_awaited_once_with("kitchen_123", "123456")
+
+
+@pytest.mark.asyncio
+async def test_scan_barcode_not_found(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(return_value=[])
+
+    with pytest.raises(ValueError, match="No item found for barcode"):
+        await coordinator.async_scan_barcode("000000", "lookup")
+
+
+@pytest.mark.asyncio
+async def test_scan_barcode_ambiguous(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(
+        return_value=[
+            {"id": "a", "inventory_id": "inv1", "inventory_name": "Kitchen", FIELD_NAME: "Milk"},
+            {"id": "b", "inventory_id": "inv2", "inventory_name": "Pantry", FIELD_NAME: "Milk"},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="multiple inventories"):
+        await coordinator.async_scan_barcode("123456", "increment")
+
+
+@pytest.mark.asyncio
+async def test_apply_barcode_updates_comma_separated(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    await coordinator._apply_barcode_updates("kitchen_123", "item-1", "BC-001, BC-002, BC-003")
+
+    mock_repository.set_item_barcodes.assert_awaited_once_with(
+        "item-1", "kitchen_123", ["BC-001", "BC-002", "BC-003"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_barcode_updates_empty_clears(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    await coordinator._apply_barcode_updates("kitchen_123", "item-1", "")
+
+    mock_repository.set_item_barcodes.assert_awaited_once_with("item-1", "kitchen_123", [])

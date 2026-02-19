@@ -86,6 +86,7 @@ class InventoryItem(TypedDict, total=False):
     desired_quantity: float
     expiry_alert_days: int
     expiry_date: str
+    inventory_id: str
     location: str
     name: str
     quantity: float

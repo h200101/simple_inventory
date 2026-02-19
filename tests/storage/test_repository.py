@@ -959,3 +959,64 @@ async def test_schema_migration_v1_to_v2(
         assert table is not None
     finally:
         await repo.async_close()
+
+
+# --- Feature: Global barcode lookup and set_item_barcodes ---
+
+
+@pytest.mark.asyncio
+async def test_get_item_by_barcode_global(repo: InventoryRepository) -> None:
+    await repo.upsert_inventory("inv1", "Kitchen", "", "", "", None)
+    await repo.upsert_inventory("inv2", "Pantry", "", "", "", None)
+
+    item1 = await repo.create_item("inv1", {FIELD_NAME: "Milk", FIELD_QUANTITY: 1})
+    item2 = await repo.create_item("inv2", {FIELD_NAME: "Milk 2L", FIELD_QUANTITY: 2})
+
+    await repo.add_item_barcode(item1, "inv1", "GLOBAL-BC")
+    await repo.add_item_barcode(item2, "inv2", "GLOBAL-BC")
+
+    results = await repo.get_item_by_barcode_global("GLOBAL-BC")
+    assert len(results) == 2
+
+    inv_ids = {r["inventory_id"] for r in results}
+    assert inv_ids == {"inv1", "inv2"}
+
+    for r in results:
+        assert "inventory_name" in r
+        assert FIELD_NAME in r
+
+
+@pytest.mark.asyncio
+async def test_get_item_by_barcode_global_not_found(repo: InventoryRepository) -> None:
+    await repo.upsert_inventory("inv1", "Kitchen", "", "", "", None)
+    results = await repo.get_item_by_barcode_global("NONEXISTENT")
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_set_item_barcodes_replaces_all(repo: InventoryRepository) -> None:
+    await repo.upsert_inventory("inv1", "Kitchen", "", "", "", None)
+    item_id = await repo.create_item("inv1", {FIELD_NAME: "Milk", FIELD_QUANTITY: 1})
+
+    await repo.add_item_barcode(item_id, "inv1", "OLD-BC-1")
+    await repo.add_item_barcode(item_id, "inv1", "OLD-BC-2")
+
+    barcodes = await repo.get_barcodes_for_item(item_id)
+    assert len(barcodes) == 2
+
+    await repo.set_item_barcodes(item_id, "inv1", ["NEW-BC-A", "NEW-BC-B", "NEW-BC-C"])
+
+    barcodes = await repo.get_barcodes_for_item(item_id)
+    assert sorted(barcodes) == ["NEW-BC-A", "NEW-BC-B", "NEW-BC-C"]
+
+
+@pytest.mark.asyncio
+async def test_set_item_barcodes_empty_clears(repo: InventoryRepository) -> None:
+    await repo.upsert_inventory("inv1", "Kitchen", "", "", "", None)
+    item_id = await repo.create_item("inv1", {FIELD_NAME: "Milk", FIELD_QUANTITY: 1})
+
+    await repo.add_item_barcode(item_id, "inv1", "BC-1")
+    assert len(await repo.get_barcodes_for_item(item_id)) == 1
+
+    await repo.set_item_barcodes(item_id, "inv1", [])
+    assert await repo.get_barcodes_for_item(item_id) == []

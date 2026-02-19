@@ -10,9 +10,13 @@ from custom_components.simple_inventory.const import DOMAIN
 from custom_components.simple_inventory.websocket_api import (
     _handle_export,
     _handle_get_history,
+    _handle_get_inventory_consumption_rates,
     _handle_get_item,
+    _handle_get_item_consumption_rates,
     _handle_import,
     _handle_list_items,
+    _handle_lookup_by_barcode,
+    _handle_scan_barcode,
     _handle_subscribe,
 )
 
@@ -44,6 +48,36 @@ def mock_coordinator_ws() -> MagicMock:
     coordinator.async_export_inventory = AsyncMock(return_value={"version": "1.0", "items": []})
     coordinator.async_import_inventory = AsyncMock(
         return_value={"added": 1, "updated": 0, "skipped": 0, "errors": []}
+    )
+    coordinator.async_get_item_consumption_rates = AsyncMock(
+        return_value={
+            "item_name": "milk",
+            "current_quantity": 5.0,
+            "unit": "liters",
+            "daily_rate": 0.5,
+            "weekly_rate": 3.5,
+            "days_until_depletion": 10.0,
+            "has_sufficient_data": True,
+        }
+    )
+    coordinator.async_get_inventory_consumption_rates = AsyncMock(
+        return_value={
+            "inventory_id": "inv1",
+            "window_days": None,
+            "items": [],
+            "summary": {
+                "total_items_tracked": 0,
+                "total_consumed": 0.0,
+                "most_consumed": [],
+                "running_out_soonest": [],
+            },
+        }
+    )
+    coordinator.async_lookup_by_barcode = AsyncMock(
+        return_value=[{"name": "milk", "inventory_id": "inv1", "inventory_name": "Kitchen"}]
+    )
+    coordinator.async_scan_barcode = AsyncMock(
+        return_value={"action": "increment", "success": True, "item_name": "milk"}
     )
     return coordinator
 
@@ -305,3 +339,229 @@ class TestHandleImport:
         await _handle_import(hass_mock, mock_connection, msg)
 
         mock_connection.send_error.assert_called_once()
+
+
+class TestHandleGetItemConsumptionRates:
+    async def test_success(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
+        hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
+        msg = {
+            "id": 50,
+            "type": f"{DOMAIN}/get_item_consumption_rates",
+            "inventory_id": "inv1",
+            "item_name": "milk",
+        }
+
+        await _handle_get_item_consumption_rates(hass_mock, mock_connection, msg)
+
+        mock_coordinator_ws.async_get_item_consumption_rates.assert_awaited_once_with(
+            "inv1", "milk", window_days=None
+        )
+        mock_connection.send_result.assert_called_once()
+        result = mock_connection.send_result.call_args[0][1]
+        assert result["item_name"] == "milk"
+
+    async def test_inventory_not_found(
+        self, hass_mock: MagicMock, mock_connection: MagicMock
+    ) -> None:
+        msg = {
+            "id": 51,
+            "type": f"{DOMAIN}/get_item_consumption_rates",
+            "inventory_id": "missing",
+            "item_name": "milk",
+        }
+
+        await _handle_get_item_consumption_rates(hass_mock, mock_connection, msg)
+
+        mock_connection.send_error.assert_called_once_with(
+            51, "inventory_not_found", "Inventory 'missing' not found"
+        )
+
+    async def test_item_not_found(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
+        hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
+        mock_coordinator_ws.async_get_item_consumption_rates.return_value = None
+        msg = {
+            "id": 52,
+            "type": f"{DOMAIN}/get_item_consumption_rates",
+            "inventory_id": "inv1",
+            "item_name": "nonexistent",
+        }
+
+        await _handle_get_item_consumption_rates(hass_mock, mock_connection, msg)
+
+        mock_connection.send_error.assert_called_once_with(
+            52,
+            "item_not_found",
+            "Item 'nonexistent' not found in inventory 'inv1'",
+        )
+
+    async def test_window_days_passed_through(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
+        hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
+        msg = {
+            "id": 53,
+            "type": f"{DOMAIN}/get_item_consumption_rates",
+            "inventory_id": "inv1",
+            "item_name": "milk",
+            "window_days": 30,
+        }
+
+        await _handle_get_item_consumption_rates(hass_mock, mock_connection, msg)
+
+        mock_coordinator_ws.async_get_item_consumption_rates.assert_awaited_once_with(
+            "inv1", "milk", window_days=30
+        )
+
+
+class TestHandleGetInventoryConsumptionRates:
+    async def test_success(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
+        hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
+        msg = {
+            "id": 60,
+            "type": f"{DOMAIN}/get_inventory_consumption_rates",
+            "inventory_id": "inv1",
+        }
+
+        await _handle_get_inventory_consumption_rates(hass_mock, mock_connection, msg)
+
+        mock_coordinator_ws.async_get_inventory_consumption_rates.assert_awaited_once_with(
+            "inv1", window_days=None
+        )
+        mock_connection.send_result.assert_called_once()
+
+    async def test_inventory_not_found(
+        self, hass_mock: MagicMock, mock_connection: MagicMock
+    ) -> None:
+        msg = {
+            "id": 61,
+            "type": f"{DOMAIN}/get_inventory_consumption_rates",
+            "inventory_id": "missing",
+        }
+
+        await _handle_get_inventory_consumption_rates(hass_mock, mock_connection, msg)
+
+        mock_connection.send_error.assert_called_once_with(
+            61, "inventory_not_found", "Inventory 'missing' not found"
+        )
+
+    async def test_window_days_passed_through(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
+        hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
+        msg = {
+            "id": 62,
+            "type": f"{DOMAIN}/get_inventory_consumption_rates",
+            "inventory_id": "inv1",
+            "window_days": 90,
+        }
+
+        await _handle_get_inventory_consumption_rates(hass_mock, mock_connection, msg)
+
+        mock_coordinator_ws.async_get_inventory_consumption_rates.assert_awaited_once_with(
+            "inv1", window_days=90
+        )
+
+
+class TestHandleLookupByBarcode:
+    async def test_lookup_success(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
+        hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
+        msg = {"id": 70, "type": f"{DOMAIN}/lookup_by_barcode", "barcode": "123456"}
+
+        await _handle_lookup_by_barcode(hass_mock, mock_connection, msg)
+
+        mock_coordinator_ws.async_lookup_by_barcode.assert_awaited_once_with("123456")
+        mock_connection.send_result.assert_called_once()
+        result = mock_connection.send_result.call_args[0][1]
+        assert "items" in result
+
+    async def test_lookup_no_inventories(
+        self, hass_mock: MagicMock, mock_connection: MagicMock
+    ) -> None:
+        msg = {"id": 71, "type": f"{DOMAIN}/lookup_by_barcode", "barcode": "123456"}
+
+        await _handle_lookup_by_barcode(hass_mock, mock_connection, msg)
+
+        mock_connection.send_error.assert_called_once_with(
+            71, "no_inventories", "No inventories configured"
+        )
+
+
+class TestHandleScanBarcode:
+    async def test_scan_success(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
+        hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
+        msg = {
+            "id": 80,
+            "type": f"{DOMAIN}/scan_barcode",
+            "barcode": "123456",
+            "action": "increment",
+            "amount": 1.0,
+        }
+
+        await _handle_scan_barcode(hass_mock, mock_connection, msg)
+
+        mock_coordinator_ws.async_scan_barcode.assert_awaited_once_with(
+            "123456", "increment", 1.0, None
+        )
+        mock_connection.send_result.assert_called_once()
+
+    async def test_scan_with_inventory_id(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
+        hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
+        msg = {
+            "id": 81,
+            "type": f"{DOMAIN}/scan_barcode",
+            "barcode": "123456",
+            "action": "decrement",
+            "inventory_id": "inv1",
+        }
+
+        await _handle_scan_barcode(hass_mock, mock_connection, msg)
+
+        mock_coordinator_ws.async_scan_barcode.assert_awaited_once()
+
+    async def test_scan_no_inventories(
+        self, hass_mock: MagicMock, mock_connection: MagicMock
+    ) -> None:
+        msg = {
+            "id": 82,
+            "type": f"{DOMAIN}/scan_barcode",
+            "barcode": "123456",
+            "action": "lookup",
+        }
+
+        await _handle_scan_barcode(hass_mock, mock_connection, msg)
+
+        mock_connection.send_error.assert_called_once_with(
+            82, "no_inventories", "No inventories configured"
+        )
+
+    async def test_scan_error_forwarded(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
+        hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
+        mock_coordinator_ws.async_scan_barcode = AsyncMock(
+            side_effect=ValueError("No item found for barcode '000' in any inventory")
+        )
+        msg = {
+            "id": 83,
+            "type": f"{DOMAIN}/scan_barcode",
+            "barcode": "000",
+            "action": "increment",
+        }
+
+        await _handle_scan_barcode(hass_mock, mock_connection, msg)
+
+        mock_connection.send_error.assert_called_once_with(
+            83, "scan_failed", "No item found for barcode '000' in any inventory"
+        )
