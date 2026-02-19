@@ -95,7 +95,9 @@ def mock_repository(sample_inventory_data: dict) -> MagicMock:
     repo.add_item_barcode = AsyncMock()
     repo.remove_item_barcode = AsyncMock()
     repo.get_item_by_barcode = AsyncMock(return_value=None)
+    repo.get_item_by_barcode_global = AsyncMock(return_value=[])
     repo.get_barcodes_for_item = AsyncMock(return_value=[])
+    repo.set_item_barcodes = AsyncMock()
 
     repo.record_history_event = AsyncMock(return_value="event-id")
     repo.get_item_history = AsyncMock(return_value=[])
@@ -792,8 +794,8 @@ async def test_async_add_item_with_barcode(
         )
 
     assert item_id == "new-item-id"
-    mock_repository.add_item_barcode.assert_awaited_once_with(
-        "new-item-id", "kitchen_123", "123456789012"
+    mock_repository.set_item_barcodes.assert_awaited_once_with(
+        "new-item-id", "kitchen_123", ["123456789012"]
     )
 
 
@@ -810,7 +812,7 @@ async def test_async_add_item_without_barcode_skips_barcode(
             quantity=1,
         )
 
-    mock_repository.add_item_barcode.assert_not_awaited()
+    mock_repository.set_item_barcodes.assert_awaited_once_with("new-item-id", "kitchen_123", [])
 
 
 @pytest.mark.asyncio
@@ -1510,3 +1512,205 @@ async def test_event_quantity_changed_fires_on_decrement(
     assert payload["quantity_after"] == 3
     assert payload["amount"] == 2
     assert payload["direction"] == "decrement"
+
+
+# ---------------------------------------------------------------------------
+# Barcode lookup & scan tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_barcode_found(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(
+        return_value=[
+            {
+                "id": "item-1",
+                "inventory_id": "kitchen_123",
+                "inventory_name": "Kitchen",
+                FIELD_NAME: "Milk",
+                FIELD_QUANTITY: 3.0,
+            }
+        ]
+    )
+
+    results = await coordinator.async_lookup_by_barcode("123456")
+    assert len(results) == 1
+    assert results[0][FIELD_NAME] == "Milk"
+    mock_repository.get_item_by_barcode_global.assert_awaited_once_with("123456")
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_barcode_not_found(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(return_value=[])
+
+    results = await coordinator.async_lookup_by_barcode("000000")
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_barcode_multiple_inventories(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(
+        return_value=[
+            {"id": "a", "inventory_id": "inv1", "inventory_name": "Kitchen", FIELD_NAME: "Milk"},
+            {"id": "b", "inventory_id": "inv2", "inventory_name": "Pantry", FIELD_NAME: "Milk"},
+        ]
+    )
+
+    results = await coordinator.async_lookup_by_barcode("123456")
+    assert len(results) == 2
+
+
+@pytest.mark.asyncio
+async def test_scan_barcode_increment(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(
+        return_value=[
+            {
+                "id": "milk-id",
+                "inventory_id": "kitchen_123",
+                "inventory_name": "Kitchen",
+                FIELD_NAME: "Milk",
+                FIELD_QUANTITY: 3.0,
+            }
+        ]
+    )
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 3}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire"):
+        result = await coordinator.async_scan_barcode("123456", "increment", 2.0)
+
+    assert result["action"] == "increment"
+    assert result["success"] is True
+    assert result["item_name"] == "Milk"
+    assert result["amount"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_scan_barcode_decrement(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(
+        return_value=[
+            {
+                "id": "milk-id",
+                "inventory_id": "kitchen_123",
+                "inventory_name": "Kitchen",
+                FIELD_NAME: "Milk",
+                FIELD_QUANTITY: 5.0,
+            }
+        ]
+    )
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 5}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire"):
+        result = await coordinator.async_scan_barcode("123456", "decrement", 1.0)
+
+    assert result["action"] == "decrement"
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_scan_barcode_lookup(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(
+        return_value=[
+            {
+                "id": "milk-id",
+                "inventory_id": "kitchen_123",
+                "inventory_name": "Kitchen",
+                FIELD_NAME: "Milk",
+                FIELD_QUANTITY: 3.0,
+            }
+        ]
+    )
+
+    result = await coordinator.async_scan_barcode("123456", "lookup")
+
+    assert result["action"] == "lookup"
+    assert result["item"][FIELD_NAME] == "Milk"
+    assert result["inventory_id"] == "kitchen_123"
+
+
+@pytest.mark.asyncio
+async def test_scan_barcode_with_inventory_id(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode = AsyncMock(
+        return_value={
+            "id": "milk-id",
+            "inventory_id": "kitchen_123",
+            FIELD_NAME: "Milk",
+            FIELD_QUANTITY: 3.0,
+        }
+    )
+    mock_repository.get_item_by_name = AsyncMock(
+        return_value={"id": "milk-id", "name": "Milk", "quantity": 3}
+    )
+    mock_repository.update_item = AsyncMock(return_value=True)
+
+    with patch.object(EventBus, "async_fire"):
+        result = await coordinator.async_scan_barcode(
+            "123456", "increment", 1.0, inventory_id="kitchen_123"
+        )
+
+    assert result["action"] == "increment"
+    mock_repository.get_item_by_barcode.assert_awaited_once_with("kitchen_123", "123456")
+
+
+@pytest.mark.asyncio
+async def test_scan_barcode_not_found(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(return_value=[])
+
+    with pytest.raises(ValueError, match="No item found for barcode"):
+        await coordinator.async_scan_barcode("000000", "lookup")
+
+
+@pytest.mark.asyncio
+async def test_scan_barcode_ambiguous(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    mock_repository.get_item_by_barcode_global = AsyncMock(
+        return_value=[
+            {"id": "a", "inventory_id": "inv1", "inventory_name": "Kitchen", FIELD_NAME: "Milk"},
+            {"id": "b", "inventory_id": "inv2", "inventory_name": "Pantry", FIELD_NAME: "Milk"},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="multiple inventories"):
+        await coordinator.async_scan_barcode("123456", "increment")
+
+
+@pytest.mark.asyncio
+async def test_apply_barcode_updates_comma_separated(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    await coordinator._apply_barcode_updates("kitchen_123", "item-1", "BC-001, BC-002, BC-003")
+
+    mock_repository.set_item_barcodes.assert_awaited_once_with(
+        "item-1", "kitchen_123", ["BC-001", "BC-002", "BC-003"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_barcode_updates_empty_clears(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    await coordinator._apply_barcode_updates("kitchen_123", "item-1", "")
+
+    mock_repository.set_item_barcodes.assert_awaited_once_with("item-1", "kitchen_123", [])

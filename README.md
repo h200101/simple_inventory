@@ -103,7 +103,12 @@ Enable `auto_add_id_to_description_enabled` to append the inventory ID to item d
 
 ### Barcodes
 
-Items can have barcodes associated with them. Most service calls accept either `name` or `barcode` to identify an item, so you can build barcode-scanning automations (e.g. scan to increment/decrement).
+Items can have multiple barcodes associated with them (comma-separated in the API). Most service calls accept either `name` or `barcode` to identify an item. Two dedicated barcode services make scanning workflows easy:
+
+- **`lookup_by_barcode`** — Search for an item by barcode across all inventories
+- **`scan_barcode`** — Scan a barcode and perform an action (increment, decrement, or lookup) with automatic cross-inventory resolution
+
+> **Important:** Barcodes with leading zeros (e.g. `0123456`) **must be quoted** in YAML automations and scripts. Unquoted values like `barcode: 0123456` are interpreted as integers by YAML, stripping the leading zero and matching the wrong item. Always use `barcode: "0123456"`. This does not affect the HA service call UI or the WebSocket API, which handle strings correctly.
 
 ### Change History
 
@@ -395,6 +400,85 @@ Example response:
 | `avg_restock_days` | Average days between increment events (null if fewer than 2 restocks) |
 | `has_sufficient_data` | `true` if there are at least 2 decrement events to calculate rates |
 
+### `simple_inventory.lookup_by_barcode`
+
+Search for an item by barcode across all inventories. Useful for finding which inventory contains a scanned item. Supports `response_variable` for use in automations and scripts.
+
+```yaml
+service: simple_inventory.lookup_by_barcode
+data:
+  barcode: "012345678901"
+response_variable: result
+```
+
+Example response:
+
+```json
+{
+  "items": [
+    {
+      "name": "Frozen Pizza",
+      "quantity": 5.0,
+      "inventory_id": "01JYFPCDMBRBRK4MB3C26S2FKH",
+      "inventory_name": "Kitchen Freezer"
+    }
+  ]
+}
+```
+
+Returns an empty list if no match is found. If the same barcode exists in multiple inventories, all matches are returned.
+
+### `simple_inventory.scan_barcode`
+
+Scan a barcode and perform an action on the matched item. Automatically resolves which inventory contains the barcode. Supports `response_variable` for use in automations and scripts.
+
+```yaml
+service: simple_inventory.scan_barcode
+data:
+  barcode: "012345678901"
+  action: "increment"
+  amount: 1
+response_variable: result
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `barcode` | Yes | The barcode to scan |
+| `action` | Yes | `"increment"`, `"decrement"`, or `"lookup"` |
+| `amount` | No | Amount to increment/decrement (default: 1, ignored for lookup) |
+| `inventory_id` | No | Scope the search to a specific inventory. Required if the barcode exists in multiple inventories. |
+
+Example response (increment/decrement):
+
+```json
+{
+  "action": "increment",
+  "success": true,
+  "item_name": "Frozen Pizza",
+  "inventory_id": "01JYFPCDMBRBRK4MB3C26S2FKH",
+  "amount": 1.0
+}
+```
+
+Example response (lookup):
+
+```json
+{
+  "action": "lookup",
+  "item": {
+    "name": "Frozen Pizza",
+    "quantity": 5.0,
+    "inventory_id": "01JYFPCDMBRBRK4MB3C26S2FKH",
+    "inventory_name": "Kitchen Freezer"
+  },
+  "inventory_id": "01JYFPCDMBRBRK4MB3C26S2FKH"
+}
+```
+
+**Error cases:**
+- Barcode not found in any inventory: raises an error
+- Barcode found in multiple inventories without `inventory_id`: raises an error listing the inventories
+
 ## WebSocket API
 
 The integration provides WebSocket commands for real-time communication. These are used by the companion card and can also be used by custom panels or scripts.
@@ -513,6 +597,37 @@ Returns:
 | `avg_restock_days` | Average days between increment events (null if fewer than 2 restocks) |
 | `has_sufficient_data` | `true` if there are at least 2 decrement events to calculate rates |
 
+### `simple_inventory/lookup_by_barcode`
+
+Search for an item by barcode across all inventories.
+
+```json
+{
+  "type": "simple_inventory/lookup_by_barcode",
+  "barcode": "012345678901"
+}
+```
+
+Returns: `{ "items": [...] }` — each item includes `inventory_id` and `inventory_name`.
+
+### `simple_inventory/scan_barcode`
+
+Scan a barcode and perform an action on the matched item.
+
+```json
+{
+  "type": "simple_inventory/scan_barcode",
+  "barcode": "012345678901",
+  "action": "increment",
+  "amount": 1.0,
+  "inventory_id": "01JYFPCDMBRBRK4MB3C26S2FKH"
+}
+```
+
+Only `barcode` and `action` are required. `amount` defaults to 1. `inventory_id` is optional unless the barcode exists in multiple inventories.
+
+Returns: `{ "action": "increment", "success": true, "item_name": "...", "inventory_id": "...", "amount": 1.0 }`
+
 ### `simple_inventory/export`
 
 Export inventory data.
@@ -582,6 +697,8 @@ automation:
 
 ### Barcode scanner: increment on scan
 
+Use `scan_barcode` for automatic cross-inventory resolution — no need to know which inventory the item belongs to:
+
 ```yaml
 automation:
   - alias: "Barcode scan - add to inventory"
@@ -589,11 +706,87 @@ automation:
       - platform: event
         event_type: tag_scanned
     action:
-      - service: simple_inventory.increment_item
+      - service: simple_inventory.scan_barcode
         data:
-          inventory_id: "01JYFPCDMBRBRK4MB3C26S2FKH"
           barcode: "{{ trigger.event.data.tag_id }}"
+          action: "increment"
           amount: 1
+```
+
+### Barcode scanner: decrement on scan (checking out items)
+
+```yaml
+automation:
+  - alias: "Barcode scan - use item"
+    trigger:
+      - platform: event
+        event_type: tag_scanned
+    condition:
+      - condition: state
+        entity_id: input_select.scan_mode
+        state: "checkout"
+    action:
+      - service: simple_inventory.scan_barcode
+        data:
+          barcode: "{{ trigger.event.data.tag_id }}"
+          action: "decrement"
+          amount: 1
+        response_variable: result
+      - service: notify.mobile_app
+        data:
+          title: "Checked out"
+          message: "{{ result.item_name }} (-{{ result.amount }})"
+```
+
+### Barcode lookup: find which inventory has an item
+
+```yaml
+script:
+  find_item_by_barcode:
+    sequence:
+      - service: simple_inventory.lookup_by_barcode
+        data:
+          barcode: "012345678901"
+        response_variable: result
+      - service: notify.mobile_app
+        data:
+          title: "Barcode lookup"
+          message: >
+            {% if result.items | length == 0 %}
+              Barcode not found in any inventory.
+            {% else %}
+              {% for item in result.items %}
+              - {{ item.name }} in {{ item.inventory_name }} (qty: {{ item.quantity }})
+              {% endfor %}
+            {% endif %}
+```
+
+### Barcode scanner with mode toggle
+
+Use an `input_select` helper to switch between scan modes (increment, decrement, lookup):
+
+```yaml
+automation:
+  - alias: "Smart barcode scanner"
+    trigger:
+      - platform: event
+        event_type: tag_scanned
+    action:
+      - service: simple_inventory.scan_barcode
+        data:
+          barcode: "{{ trigger.event.data.tag_id }}"
+          action: "{{ states('input_select.scan_mode') }}"
+          amount: "{{ states('input_number.scan_amount') | float(1) }}"
+        response_variable: result
+      - service: notify.mobile_app
+        data:
+          title: "Scanned: {{ result.item_name }}"
+          message: >
+            {% if result.action == 'lookup' %}
+              Found in inventory {{ result.inventory_id }}
+            {% else %}
+              {{ result.action | title }}: {{ result.amount }}
+            {% endif %}
 ```
 
 ### Notify when items expire

@@ -75,6 +75,38 @@ class ServiceHandler:
         )
         return result
 
+    async def async_lookup_by_barcode(self, call: ServiceCall) -> JsonObjectType:
+        """Look up an item by barcode across all inventories."""
+        barcode: str = call.data["barcode"]
+        coordinators = get_coordinators(self.hass)
+        if not coordinators:
+            raise ValueError("No inventories configured")
+        coordinator = next(iter(coordinators.values()))
+        results = await coordinator.async_lookup_by_barcode(barcode)
+        return cast(JsonObjectType, {"items": results})
+
+    async def async_scan_barcode(self, call: ServiceCall) -> JsonObjectType:
+        """Scan a barcode and perform an action."""
+        data = call.data
+        barcode: str = data["barcode"]
+        action: str = data["action"]
+        amount: float = data.get("amount", 1.0)
+        inventory_id: str | None = data.get("inventory_id")
+
+        coordinators = get_coordinators(self.hass)
+        if not coordinators:
+            raise ValueError("No inventories configured")
+
+        if inventory_id:
+            coordinator = coordinators.get(inventory_id)
+            if coordinator is None:
+                raise ValueError(f"No coordinator available for inventory '{inventory_id}'")
+        else:
+            coordinator = next(iter(coordinators.values()))
+
+        result = await coordinator.async_scan_barcode(barcode, action, amount, inventory_id)
+        return cast(JsonObjectType, result)
+
     async def async_get_item_consumption_rates(self, call: ServiceCall) -> JsonObjectType:
         """Return consumption rates for a single item."""
         data = call.data

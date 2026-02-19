@@ -860,6 +860,66 @@ class InventoryRepository:
             "updated_at": row[15],
         }
 
+    async def get_item_by_barcode_global(self, barcode: str) -> list[dict[str, Any]]:
+        """Cross-inventory barcode lookup. Returns all items matching the barcode."""
+        conn = self._connection()
+        cursor = await conn.execute(
+            """
+            SELECT i.id, i.inventory_id, inv.name AS inventory_name,
+                   i.name, i.description, i.quantity, i.unit,
+                   i.expiry_date, i.expiry_alert_days,
+                   i.auto_add_enabled, i.auto_add_id_to_description_enabled,
+                   i.auto_add_to_list_quantity, i.desired_quantity,
+                   i.todo_list, i.todo_quantity_placement,
+                   i.created_at, i.updated_at
+            FROM items i
+            JOIN item_barcodes ib ON ib.item_id = i.id
+            JOIN inventories inv ON inv.id = i.inventory_id
+            WHERE ib.barcode = ?
+            """,
+            (barcode,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+
+        return [
+            {
+                "id": row[0],
+                "inventory_id": row[1],
+                "inventory_name": row[2],
+                FIELD_NAME: row[3],
+                FIELD_DESCRIPTION: row[4],
+                FIELD_QUANTITY: row[5],
+                FIELD_UNIT: row[6],
+                FIELD_EXPIRY_DATE: row[7],
+                FIELD_EXPIRY_ALERT_DAYS: row[8],
+                FIELD_AUTO_ADD_ENABLED: bool(row[9]),
+                FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED: bool(row[10]),
+                FIELD_AUTO_ADD_TO_LIST_QUANTITY: row[11],
+                FIELD_DESIRED_QUANTITY: row[12],
+                FIELD_TODO_LIST: row[13],
+                FIELD_TODO_QUANTITY_PLACEMENT: row[14],
+                "created_at": row[15],
+                "updated_at": row[16],
+            }
+            for row in rows
+        ]
+
+    async def set_item_barcodes(self, item_id: str, inventory_id: str, barcodes: list[str]) -> None:
+        """Replace all barcodes for an item."""
+        conn = self._connection()
+        async with self._lock:
+            await conn.execute("DELETE FROM item_barcodes WHERE item_id = ?", (item_id,))
+            if barcodes:
+                await conn.executemany(
+                    """
+                    INSERT INTO item_barcodes (item_id, inventory_id, barcode)
+                    VALUES (?, ?, ?)
+                    """,
+                    [(item_id, inventory_id, bc) for bc in barcodes],
+                )
+            await conn.commit()
+
     async def get_barcodes_for_item(self, item_id: str) -> list[str]:
         """Return all barcodes associated with an item."""
         conn = self._connection()

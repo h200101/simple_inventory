@@ -181,9 +181,7 @@ class SimpleInventoryCoordinator:
 
         item_id = await self.repository.create_item(inventory_id, item_payload)
 
-        barcode = kwargs.get(FIELD_BARCODE)
-        if barcode and barcode.strip():
-            await self.repository.add_item_barcode(item_id, inventory_id, barcode.strip())
+        await self._apply_barcode_updates(inventory_id, item_id, kwargs.get(FIELD_BARCODE, ""))
 
         await self._apply_location_updates(
             inventory_id,
@@ -270,8 +268,8 @@ class SimpleInventoryCoordinator:
                 item["id"], kwargs.get(FIELD_CATEGORY, DEFAULT_CATEGORY)
             )
 
-        if barcode and barcode.strip():
-            await self.repository.add_item_barcode(item["id"], inventory_id, barcode.strip())
+        if barcode is not None:
+            await self._apply_barcode_updates(inventory_id, item["id"], barcode)
 
         await self._after_change(inventory_id)
         return True
@@ -349,6 +347,74 @@ class SimpleInventoryCoordinator:
         """Return item data by name."""
         await self.async_initialize()
         return await self.repository.get_item_by_name(inventory_id, name)
+
+    async def async_lookup_by_barcode(self, barcode: str) -> list[dict[str, Any]]:
+        """Cross-inventory barcode lookup."""
+        await self.async_initialize()
+        return await self.repository.get_item_by_barcode_global(barcode)
+
+    async def async_scan_barcode(
+        self,
+        barcode: str,
+        action: str,
+        amount: float = 1.0,
+        inventory_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Scan a barcode and perform an action (increment/decrement/lookup)."""
+        await self.async_initialize()
+
+        if inventory_id:
+            item = await self.repository.get_item_by_barcode(inventory_id, barcode)
+            if item is None:
+                raise ValueError(
+                    f"No item found for barcode '{barcode}' in inventory '{inventory_id}'"
+                )
+            resolved_inventory_id = inventory_id
+        else:
+            matches = await self.repository.get_item_by_barcode_global(barcode)
+            if not matches:
+                raise ValueError(f"No item found for barcode '{barcode}' in any inventory")
+            if len(matches) > 1:
+                inv_names = [m.get("inventory_name", m["inventory_id"]) for m in matches]
+                raise ValueError(
+                    f"Barcode '{barcode}' found in multiple inventories: "
+                    f"{', '.join(inv_names)}. Specify inventory_id to disambiguate."
+                )
+            item = matches[0]
+            resolved_inventory_id = item["inventory_id"]
+
+        item_name = str(item[FIELD_NAME])
+
+        if action == "lookup":
+            return {"action": "lookup", "item": item, "inventory_id": resolved_inventory_id}
+
+        if action == "increment":
+            result = await self.async_increment_item(
+                resolved_inventory_id, name=item_name, amount=amount
+            )
+            return {
+                "action": "increment",
+                "success": result,
+                "item_name": item_name,
+                "inventory_id": resolved_inventory_id,
+                "amount": amount,
+            }
+
+        if action == "decrement":
+            result = await self.async_decrement_item(
+                resolved_inventory_id, name=item_name, amount=amount
+            )
+            return {
+                "action": "decrement",
+                "success": result,
+                "item_name": item_name,
+                "inventory_id": resolved_inventory_id,
+                "amount": amount,
+            }
+
+        raise ValueError(
+            f"Invalid action '{action}'. Must be 'increment', 'decrement', or 'lookup'"
+        )
 
     async def async_list_items(self, inventory_id: str) -> list[dict[str, Any]]:
         """Return detailed items for an inventory."""
@@ -969,6 +1035,20 @@ class SimpleInventoryCoordinator:
 
             await self._after_change(inventory_id)
         return updated
+
+    async def _apply_barcode_updates(
+        self, inventory_id: str, item_id: str, barcode_str: str
+    ) -> None:
+        if not barcode_str:
+            await self.repository.set_item_barcodes(item_id, inventory_id, [])
+            return
+
+        barcodes = [b.strip() for b in barcode_str.split(",") if b.strip()]
+        if not barcodes:
+            await self.repository.set_item_barcodes(item_id, inventory_id, [])
+            return
+
+        await self.repository.set_item_barcodes(item_id, inventory_id, barcodes)
 
     async def _apply_location_updates(
         self,

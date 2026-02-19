@@ -12,6 +12,8 @@ SERVICE_UPDATE_ITEM: Final = "update_item"
 SERVICE_GET_ITEMS: Final = "get_items"
 SERVICE_GET_ALL_ITEMS: Final = "get_items_from_all_inventories"
 SERVICE_GET_ITEM_CONSUMPTION_RATES: Final = "get_item_consumption_rates"
+SERVICE_LOOKUP_BY_BARCODE: Final = "lookup_by_barcode"
+SERVICE_SCAN_BARCODE: Final = "scan_barcode"
 
 # Item Fields (for data structure), needs to match params constants in frontend
 FIELD_AUTO_ADD_ENABLED: Final = "auto_add_enabled"

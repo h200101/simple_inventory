@@ -112,6 +112,23 @@ GET_ITEM_CONSUMPTION_RATES_SCHEMA = vol.Schema(
     }
 )
 
+LOOKUP_BY_BARCODE_SCHEMA = vol.Schema(
+    {
+        vol.Required("barcode"): cv.string,
+    }
+)
+
+SCAN_BARCODE_SCHEMA = vol.Schema(
+    {
+        vol.Required("barcode"): cv.string,
+        vol.Required("action"): vol.In(["increment", "decrement", "lookup"]),
+        vol.Optional("amount", default=1): vol.All(
+            vol.Coerce(float), vol.Range(min=0, min_included=False)
+        ),
+        vol.Optional("inventory_id"): cv.string,
+    }
+)
+
 ALL_SCHEMAS = {
     "add_item": ADD_ITEM_SCHEMA,
     "remove_item": REMOVE_ITEM_SCHEMA,
@@ -121,4 +138,6 @@ ALL_SCHEMAS = {
     "get_items": GET_ITEMS_SCHEMA,
     "get_items_from_all_inventories": GET_ALL_ITEMS_SCHEMA,
     "get_item_consumption_rates": GET_ITEM_CONSUMPTION_RATES_SCHEMA,
+    "lookup_by_barcode": LOOKUP_BY_BARCODE_SCHEMA,
+    "scan_barcode": SCAN_BARCODE_SCHEMA,
 }

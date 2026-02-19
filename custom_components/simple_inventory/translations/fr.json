@@ -207,6 +207,16 @@
       },
       "name": "Incrémenter un article"
     },
+    "lookup_by_barcode": {
+      "description": "Rechercher un article par code-barres dans tous les inventaires",
+      "fields": {
+        "barcode": {
+          "description": "Code-barres à rechercher (UPC, EAN, etc.)",
+          "name": "Code-barres"
+        }
+      },
+      "name": "Rechercher par code-barres"
+    },
     "remove_item": {
       "description": "Supprimer un article d'un inventaire",
       "fields": {
@@ -224,6 +234,28 @@
         }
       },
       "name": "Supprimer un article"
+    },
+    "scan_barcode": {
+      "description": "Scanner un code-barres et effectuer une action (incrémenter, décrémenter ou rechercher)",
+      "fields": {
+        "action": {
+          "description": "Action à effectuer sur l'article trouvé",
+          "name": "Action"
+        },
+        "amount": {
+          "description": "Montant à incrémenter ou décrémenter",
+          "name": "Montant"
+        },
+        "barcode": {
+          "description": "Code-barres à scanner (UPC, EAN, etc.)",
+          "name": "Code-barres"
+        },
+        "inventory_id": {
+          "description": "ID de l'inventaire optionnel pour limiter la recherche",
+          "name": "ID de l'inventaire"
+        }
+      },
+      "name": "Scanner un code-barres"
     },
     "update_item": {
       "description": "Mettre à jour un article existant de l'inventaire",
