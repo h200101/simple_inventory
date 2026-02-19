@@ -1209,7 +1209,7 @@ class TestComputeConsumptionRates:
     def test_no_window_uses_span_from_first_event(self) -> None:
         now = datetime.utcnow()
         first = (now - timedelta(days=50)).isoformat()
-        raw = {
+        raw: dict[str, Any] = {
             "decrement_count": 5,
             "total_consumed": 10.0,
             "window_days": None,

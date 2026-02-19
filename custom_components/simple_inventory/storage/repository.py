@@ -1278,6 +1278,19 @@ class InventoryRepository:
         row = await cursor.fetchone()
         await cursor.close()
 
+        if row is None:
+            return {
+                "item_id": item_id,
+                "window_days": window_days,
+                "window_start": window_start,
+                "decrement_count": 0,
+                "total_consumed": 0.0,
+                "first_event_ts": None,
+                "last_event_ts": None,
+                "restock_count": 0,
+                "restock_timestamps": [],
+            }
+
         restock_ts_raw = row[5] or ""
         restock_timestamps = [ts for ts in restock_ts_raw.split("|") if ts]
 
