@@ -19,6 +19,7 @@ from .const import (
     SERVICE_GET_ITEM_CONSUMPTION_RATES,
     SERVICE_GET_ITEMS,
     SERVICE_INCREMENT_ITEM,
+    SERVICE_LOOKUP_BARCODE_PRODUCT,
     SERVICE_LOOKUP_BY_BARCODE,
     SERVICE_REMOVE_ITEM,
     SERVICE_SCAN_BARCODE,
@@ -30,6 +31,7 @@ from .schemas.service_schemas import (
     GET_ALL_ITEMS_SCHEMA,
     GET_ITEM_CONSUMPTION_RATES_SCHEMA,
     GET_ITEMS_SCHEMA,
+    LOOKUP_BARCODE_PRODUCT_SCHEMA,
     LOOKUP_BY_BARCODE_SCHEMA,
     QUANTITY_UPDATE_SCHEMA,
     REMOVE_ITEM_SCHEMA,
@@ -138,6 +140,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         _register_service(
             hass,
+            SERVICE_LOOKUP_BARCODE_PRODUCT,
+            service_handler.async_lookup_barcode_product,
+            LOOKUP_BARCODE_PRODUCT_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        _register_service(
+            hass,
             SERVICE_LOOKUP_BY_BARCODE,
             service_handler.async_lookup_by_barcode,
             LOOKUP_BY_BARCODE_SCHEMA,
@@ -240,6 +249,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _remove_service(hass, SERVICE_GET_ITEMS)
         _remove_service(hass, SERVICE_GET_ALL_ITEMS)
         _remove_service(hass, SERVICE_GET_ITEM_CONSUMPTION_RATES)
+        _remove_service(hass, SERVICE_LOOKUP_BARCODE_PRODUCT)
         _remove_service(hass, SERVICE_LOOKUP_BY_BARCODE)
         _remove_service(hass, SERVICE_SCAN_BARCODE)
         domain_data["services_registered"] = False

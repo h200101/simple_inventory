@@ -89,7 +89,7 @@ async def test_async_increment_item_success(
     await quantity_service.async_increment_item(quantity_service_call)
 
     mock_coordinator.async_increment_item.assert_awaited_once_with(
-        "kitchen", "milk", 2.0, barcode=None
+        "kitchen", "milk", 2.0, barcode=None, price=None
     )
     mock_coordinator.async_get_item.assert_awaited_once_with("kitchen", "milk")
     mock_todo_manager.check_and_remove_item.assert_awaited_once_with(
@@ -107,7 +107,7 @@ async def test_async_increment_item_default_amount(
     await quantity_service.async_increment_item(basic_service_call)
 
     mock_coordinator.async_increment_item.assert_awaited_once_with(
-        "kitchen", "milk", 1.0, barcode=None
+        "kitchen", "milk", 1.0, barcode=None, price=None
     )
     mock_coordinator.async_save_data.assert_awaited_once_with("kitchen")
 
@@ -125,7 +125,7 @@ async def test_async_increment_item_not_found_logs_warning(
         await quantity_service.async_increment_item(quantity_service_call)
 
     mock_coordinator.async_increment_item.assert_awaited_once_with(
-        "kitchen", "milk", 2.0, barcode=None
+        "kitchen", "milk", 2.0, barcode=None, price=None
     )
     mock_coordinator.async_save_data.assert_not_awaited()
 
@@ -158,7 +158,7 @@ async def test_async_decrement_item_success_with_todo_check(
     await quantity_service.async_decrement_item(quantity_service_call)
 
     mock_coordinator.async_decrement_item.assert_awaited_once_with(
-        "kitchen", "milk", 2.0, barcode=None
+        "kitchen", "milk", 2.0, barcode=None, price=None
     )
     mock_coordinator.async_get_item.assert_awaited_once_with("kitchen", "milk")
     mock_todo_manager.check_and_add_item.assert_awaited_once_with(
@@ -176,7 +176,7 @@ async def test_async_decrement_item_default_amount(
     await quantity_service.async_decrement_item(basic_service_call)
 
     mock_coordinator.async_decrement_item.assert_awaited_once_with(
-        "kitchen", "milk", 1.0, barcode=None
+        "kitchen", "milk", 1.0, barcode=None, price=None
     )
     mock_coordinator.async_save_data.assert_awaited_once_with("kitchen")
 
@@ -212,7 +212,7 @@ async def test_async_decrement_item_not_found_logs_warning(
         await quantity_service.async_decrement_item(quantity_service_call)
 
     mock_coordinator.async_decrement_item.assert_awaited_once_with(
-        "kitchen", "milk", 2.0, barcode=None
+        "kitchen", "milk", 2.0, barcode=None, price=None
     )
 
     mock_coordinator.async_get_item.assert_not_awaited()
@@ -271,7 +271,7 @@ async def test_increment_various_amounts(
     await quantity_service.async_increment_item(call)
 
     mock_coordinator.async_increment_item.assert_awaited_once_with(
-        "kitchen", "milk", float(amount), barcode=None
+        "kitchen", "milk", float(amount), barcode=None, price=None
     )
 
 
@@ -335,7 +335,7 @@ async def test_async_increment_item_with_barcode(
     await quantity_service.async_increment_item(call)
 
     mock_coordinator.async_increment_item.assert_awaited_once_with(
-        "kitchen", None, 2, barcode="BC-123"
+        "kitchen", None, 2, barcode="BC-123", price=None
     )
     mock_coordinator.async_save_data.assert_awaited_once_with("kitchen")
 
@@ -355,6 +355,6 @@ async def test_async_decrement_item_with_barcode(
     await quantity_service.async_decrement_item(call)
 
     mock_coordinator.async_decrement_item.assert_awaited_once_with(
-        "kitchen", None, 1, barcode="BC-456"
+        "kitchen", None, 1, barcode="BC-456", price=None
     )
     mock_coordinator.async_save_data.assert_awaited_once_with("kitchen")

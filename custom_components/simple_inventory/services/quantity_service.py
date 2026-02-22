@@ -54,13 +54,14 @@ class QuantityService(BaseServiceHandler):
         call: ServiceCall,
         operation: Literal["increment", "decrement"],
         coordinator_method: Callable[
-            [SimpleInventoryCoordinator, str, str | None, float, str | None],
+            [SimpleInventoryCoordinator, str, str | None, float, str | None, float | None],
             Awaitable[bool],
         ],
         todo_method: Callable[[str, InventoryItem], Awaitable[bool]],
     ) -> None:
         inventory_id, name, barcode = self._get_inventory_name_barcode(call)
         amount = float(call.data.get("amount", 1))
+        price: float | None = call.data.get("price")
         display_name = name or barcode or "unknown"
 
         coordinator = self._require_coordinator(inventory_id)
@@ -68,7 +69,7 @@ class QuantityService(BaseServiceHandler):
             return
 
         try:
-            if await coordinator_method(coordinator, inventory_id, name, amount, barcode):
+            if await coordinator_method(coordinator, inventory_id, name, amount, barcode, price):
                 resolved_name = name
                 if not resolved_name and barcode:
                     item_by_bc = await coordinator.repository.get_item_by_barcode(
@@ -108,8 +109,8 @@ class QuantityService(BaseServiceHandler):
         await self._handle_quantity_change(
             call,
             "increment",
-            lambda coordinator, inv_id, item_name, amt, bc: (
-                coordinator.async_increment_item(inv_id, item_name, amt, barcode=bc)
+            lambda coordinator, inv_id, item_name, amt, bc, p: (
+                coordinator.async_increment_item(inv_id, item_name, amt, barcode=bc, price=p)
             ),
             self.todo_manager.check_and_remove_item,
         )
@@ -118,8 +119,8 @@ class QuantityService(BaseServiceHandler):
         await self._handle_quantity_change(
             call,
             "decrement",
-            lambda coordinator, inv_id, item_name, amt, bc: (
-                coordinator.async_decrement_item(inv_id, item_name, amt, barcode=bc)
+            lambda coordinator, inv_id, item_name, amt, bc, p: (
+                coordinator.async_decrement_item(inv_id, item_name, amt, barcode=bc, price=p)
             ),
             self.todo_manager.check_and_add_item,
         )

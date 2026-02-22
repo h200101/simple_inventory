@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from datetime import date, datetime, timedelta
@@ -15,6 +16,7 @@ from ..const import (
     DEFAULT_AUTO_ADD_TO_LIST_QUANTITY,
     DEFAULT_DESIRED_QUANTITY,
     DEFAULT_EXPIRY_ALERT_DAYS,
+    DEFAULT_PRICE,
     DEFAULT_QUANTITY,
     FIELD_AUTO_ADD_ENABLED,
     FIELD_AUTO_ADD_ID_TO_DESCRIPTION_ENABLED,
@@ -26,6 +28,7 @@ from ..const import (
     FIELD_EXPIRY_DATE,
     FIELD_LOCATION,
     FIELD_NAME,
+    FIELD_PRICE,
     FIELD_QUANTITY,
     FIELD_TODO_LIST,
     FIELD_TODO_QUANTITY_PLACEMENT,
@@ -38,7 +41,7 @@ from ..const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 LEGACY_MIGRATION_FLAG = "legacy_migrated"
 
 
@@ -164,6 +167,34 @@ class InventoryRepository:
             category_id = await self.ensure_category(category_name)
             await self.set_item_categories(item_id, [category_id])
 
+    async def get_barcode_provider_config(self) -> dict[str, Any]:
+        """Read the barcode lookup provider configuration from the metadata table."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT value FROM metadata WHERE key = ?", ("barcode_lookup_provider",)
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            return {}
+        import json
+
+        try:
+            return cast(dict[str, Any], json.loads(row[0]))
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    async def set_barcode_provider_config(self, config: dict[str, Any]) -> None:
+        """Write barcode lookup provider configuration to the metadata table."""
+        assert self._conn is not None
+        import json
+
+        await self._conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+            ("barcode_lookup_provider", json.dumps(config)),
+        )
+        await self._conn.commit()
+
     async def async_close(self) -> None:
         """Close the database connection."""
         async with self._lock:
@@ -214,6 +245,7 @@ class InventoryRepository:
                     desired_quantity REAL NOT NULL DEFAULT 0,
                     todo_list TEXT DEFAULT '',
                     todo_quantity_placement TEXT NOT NULL DEFAULT 'name',
+                    price REAL NOT NULL DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (inventory_id) REFERENCES inventories(id) ON DELETE CASCADE,
@@ -293,11 +325,15 @@ class InventoryRepository:
                 ("schema_version", str(SCHEMA_VERSION)),
             )
             await self._migrate_to_v2()
+            await self._migrate_to_v3()
             return
 
         current_version = int(row[0])
-        if current_version < 2:
-            await self._migrate_to_v2()
+        if current_version < SCHEMA_VERSION:
+            if current_version < 2:
+                await self._migrate_to_v2()
+            if current_version < 3:
+                await self._migrate_to_v3()
             await self._conn.execute(
                 "UPDATE metadata SET value = ? WHERE key = 'schema_version'",
                 (str(SCHEMA_VERSION),),
@@ -337,6 +373,18 @@ class InventoryRepository:
             CREATE INDEX IF NOT EXISTS idx_history_event_type
                 ON consumption_history (event_type);
         """)
+
+    async def _migrate_to_v3(self) -> None:
+        """Add price column to items and consumption_history (schema v2 -> v3)."""
+        assert self._conn is not None
+        # Add price to items table
+        with contextlib.suppress(Exception):
+            await self._conn.execute("ALTER TABLE items ADD COLUMN price REAL NOT NULL DEFAULT 0")
+        # Add price to consumption_history table
+        with contextlib.suppress(Exception):
+            await self._conn.execute(
+                "ALTER TABLE consumption_history ADD COLUMN price REAL NOT NULL DEFAULT 0"
+            )
 
     def _connection(self) -> aiosqlite.Connection:
         """Accessor for the open connection."""
@@ -442,6 +490,7 @@ class InventoryRepository:
             FIELD_DESIRED_QUANTITY: data.get(FIELD_DESIRED_QUANTITY, 0),
             FIELD_TODO_LIST: data.get(FIELD_TODO_LIST, ""),
             FIELD_TODO_QUANTITY_PLACEMENT: data.get(FIELD_TODO_QUANTITY_PLACEMENT, "name"),
+            FIELD_PRICE: data.get(FIELD_PRICE, DEFAULT_PRICE),
         }
 
         conn = self._connection()
@@ -460,6 +509,7 @@ class InventoryRepository:
             payload[FIELD_DESIRED_QUANTITY],
             payload[FIELD_TODO_LIST],
             payload[FIELD_TODO_QUANTITY_PLACEMENT],
+            payload[FIELD_PRICE],
         )
 
         async with self._lock:
@@ -470,9 +520,9 @@ class InventoryRepository:
                     expiry_date, expiry_alert_days,
                     auto_add_enabled, auto_add_id_to_description_enabled,
                     auto_add_to_list_quantity, desired_quantity, todo_list,
-                    todo_quantity_placement
+                    todo_quantity_placement, price
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(inventory_id, name) DO UPDATE SET
                     quantity = items.quantity + excluded.quantity,
                     description = CASE
@@ -497,6 +547,10 @@ class InventoryRepository:
                         ELSE items.todo_list
                     END,
                     todo_quantity_placement = excluded.todo_quantity_placement,
+                    price = CASE
+                        WHEN excluded.price > 0 THEN excluded.price
+                        ELSE items.price
+                    END,
                     updated_at = CURRENT_TIMESTAMP
                 RETURNING id
                 """,
@@ -523,6 +577,7 @@ class InventoryRepository:
             FIELD_DESIRED_QUANTITY: "desired_quantity",
             FIELD_TODO_LIST: "todo_list",
             FIELD_TODO_QUANTITY_PLACEMENT: "todo_quantity_placement",
+            FIELD_PRICE: "price",
         }
 
         fields: list[str] = []
@@ -581,6 +636,7 @@ class InventoryRepository:
                 desired_quantity,
                 todo_list,
                 todo_quantity_placement,
+                price,
                 created_at,
                 updated_at
             FROM items
@@ -610,8 +666,9 @@ class InventoryRepository:
                 FIELD_DESIRED_QUANTITY: row[10],
                 FIELD_TODO_LIST: row[11],
                 FIELD_TODO_QUANTITY_PLACEMENT: row[12],
-                "created_at": row[13],
-                "updated_at": row[14],
+                FIELD_PRICE: row[13],
+                "created_at": row[14],
+                "updated_at": row[15],
                 FIELD_CATEGORY: "",
                 FIELD_LOCATION: "",
                 "locations": [],
@@ -688,7 +745,7 @@ class InventoryRepository:
                    expiry_date, expiry_alert_days, auto_add_enabled,
                    auto_add_id_to_description_enabled, auto_add_to_list_quantity,
                    desired_quantity, todo_list, todo_quantity_placement,
-                   created_at, updated_at
+                   price, created_at, updated_at
             FROM items
             WHERE inventory_id = ?
               AND name = ?
@@ -715,8 +772,9 @@ class InventoryRepository:
             FIELD_DESIRED_QUANTITY: row[11],
             FIELD_TODO_LIST: row[12],
             FIELD_TODO_QUANTITY_PLACEMENT: row[13],
-            "created_at": row[14],
-            "updated_at": row[15],
+            FIELD_PRICE: row[14],
+            "created_at": row[15],
+            "updated_at": row[16],
         }
 
     async def ensure_location(self, inventory_id: str, name: str) -> int:
@@ -828,7 +886,7 @@ class InventoryRepository:
                    i.auto_add_enabled, i.auto_add_id_to_description_enabled,
                    i.auto_add_to_list_quantity, i.desired_quantity,
                    i.todo_list, i.todo_quantity_placement,
-                   i.created_at, i.updated_at
+                   i.price, i.created_at, i.updated_at
             FROM items i
             JOIN item_barcodes ib ON ib.item_id = i.id
             WHERE ib.inventory_id = ?
@@ -856,8 +914,9 @@ class InventoryRepository:
             FIELD_DESIRED_QUANTITY: row[11],
             FIELD_TODO_LIST: row[12],
             FIELD_TODO_QUANTITY_PLACEMENT: row[13],
-            "created_at": row[14],
-            "updated_at": row[15],
+            FIELD_PRICE: row[14],
+            "created_at": row[15],
+            "updated_at": row[16],
         }
 
     async def get_item_by_barcode_global(self, barcode: str) -> list[dict[str, Any]]:
@@ -871,7 +930,7 @@ class InventoryRepository:
                    i.auto_add_enabled, i.auto_add_id_to_description_enabled,
                    i.auto_add_to_list_quantity, i.desired_quantity,
                    i.todo_list, i.todo_quantity_placement,
-                   i.created_at, i.updated_at
+                   i.price, i.created_at, i.updated_at
             FROM items i
             JOIN item_barcodes ib ON ib.item_id = i.id
             JOIN inventories inv ON inv.id = i.inventory_id
@@ -899,8 +958,9 @@ class InventoryRepository:
                 FIELD_DESIRED_QUANTITY: row[12],
                 FIELD_TODO_LIST: row[13],
                 FIELD_TODO_QUANTITY_PLACEMENT: row[14],
-                "created_at": row[15],
-                "updated_at": row[16],
+                FIELD_PRICE: row[15],
+                "created_at": row[16],
+                "updated_at": row[17],
             }
             for row in rows
         ]
@@ -976,9 +1036,16 @@ class InventoryRepository:
             inventory_id=inventory_id,
         )
 
+        total_value = sum(
+            float(item.get(FIELD_QUANTITY, 0)) * float(item.get(FIELD_PRICE, 0))
+            for item in items
+            if float(item.get(FIELD_PRICE, 0)) > 0
+        )
+
         return {
             "total_items": total_items,
             "total_quantity": total_quantity,
+            "total_value": total_value,
             "categories": categories,
             "locations": locations,
             "below_threshold": below_threshold,
@@ -1108,6 +1175,7 @@ class InventoryRepository:
         location_from: str = "",
         location_to: str = "",
         metadata: str = "",
+        price: float = 0,
     ) -> str:
         """Record a consumption/inventory history event. Returns event ID."""
         event_id = str(uuid.uuid4())
@@ -1119,9 +1187,9 @@ class InventoryRepository:
                 INSERT INTO consumption_history (
                     id, item_id, inventory_id, event_type, amount,
                     quantity_before, quantity_after, source,
-                    location_from, location_to, timestamp, metadata
+                    location_from, location_to, timestamp, metadata, price
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_id,
@@ -1136,6 +1204,7 @@ class InventoryRepository:
                     location_to,
                     timestamp,
                     metadata,
+                    price,
                 ),
             )
             await conn.commit()
@@ -1223,7 +1292,7 @@ class InventoryRepository:
             SELECT ch.id, ch.item_id, ch.inventory_id, ch.event_type,
                    ch.amount, ch.quantity_before, ch.quantity_after,
                    ch.source, ch.location_from, ch.location_to,
-                   ch.timestamp, ch.metadata, i.name AS item_name
+                   ch.timestamp, ch.metadata, i.name AS item_name, ch.price
             FROM consumption_history ch
             LEFT JOIN items i ON i.id = ch.item_id
             {where}
@@ -1250,6 +1319,7 @@ class InventoryRepository:
                 "timestamp": row[10],
                 "metadata": row[11],
                 "item_name": row[12] or "",
+                FIELD_PRICE: float(row[13]) if row[13] else 0,
             }
             for row in rows
         ]
@@ -1320,13 +1390,24 @@ class InventoryRepository:
                 WHERE item_id = ? AND event_type IN ('increment', 'add')
                   AND (? = '' OR timestamp >= ?)
                 ORDER BY timestamp
+            ),
+            spend AS (
+                SELECT COALESCE(SUM(price * amount), 0) AS total_spend,
+                       SUM(CASE WHEN price > 0 THEN 1 ELSE 0 END) AS priced_count
+                FROM consumption_history
+                WHERE item_id = ? AND event_type IN ('increment', 'add')
+                  AND (? = '' OR timestamp >= ?)
             )
             SELECT d.cnt, d.total, d.first_ts, d.last_ts,
                    (SELECT COUNT(*) FROM restocks),
-                   (SELECT GROUP_CONCAT(timestamp, '|') FROM restocks)
-            FROM decrements d
+                   (SELECT GROUP_CONCAT(timestamp, '|') FROM restocks),
+                   s.total_spend, s.priced_count
+            FROM decrements d, spend s
             """,
             (
+                item_id,
+                window_start,
+                window_start,
                 item_id,
                 window_start,
                 window_start,
@@ -1349,6 +1430,8 @@ class InventoryRepository:
                 "last_event_ts": None,
                 "restock_count": 0,
                 "restock_timestamps": [],
+                "total_spend": 0.0,
+                "restock_spend_count": 0,
             }
 
         restock_ts_raw = row[5] or ""
@@ -1364,6 +1447,8 @@ class InventoryRepository:
             "last_event_ts": row[3],
             "restock_count": int(row[4]),
             "restock_timestamps": restock_timestamps,
+            "total_spend": float(row[6]),
+            "restock_spend_count": int(row[7] or 0),
         }
 
     async def get_inventory_consumption_stats(

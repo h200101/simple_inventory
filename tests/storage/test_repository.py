@@ -942,13 +942,13 @@ async def test_schema_migration_v1_to_v2(
     await repo.async_initialize()
 
     try:
-        # Verify schema version is now 2
+        # Verify schema version is now 3
         conn = repo._connection()
         cursor = await conn.execute("SELECT value FROM metadata WHERE key = 'schema_version'")
         row = await cursor.fetchone()
         await cursor.close()
         assert row is not None
-        assert int(row[0]) == 2
+        assert int(row[0]) == 3
 
         # Verify consumption_history table exists
         cursor = await conn.execute(
@@ -957,6 +957,17 @@ async def test_schema_migration_v1_to_v2(
         table = await cursor.fetchone()
         await cursor.close()
         assert table is not None
+
+        # Verify price column was added to items and consumption_history
+        cursor = await conn.execute("PRAGMA table_info(items)")
+        item_columns = {r[1] for r in await cursor.fetchall()}
+        await cursor.close()
+        assert "price" in item_columns
+
+        cursor = await conn.execute("PRAGMA table_info(consumption_history)")
+        history_columns = {r[1] for r in await cursor.fetchall()}
+        await cursor.close()
+        assert "price" in history_columns
     finally:
         await repo.async_close()
 
@@ -1020,3 +1031,24 @@ async def test_set_item_barcodes_empty_clears(repo: InventoryRepository) -> None
 
     await repo.set_item_barcodes(item_id, "inv1", [])
     assert await repo.get_barcodes_for_item(item_id) == []
+
+
+@pytest.mark.asyncio
+async def test_get_barcode_provider_config_empty(repo: InventoryRepository) -> None:
+    config = await repo.get_barcode_provider_config()
+    assert config == {}
+
+
+@pytest.mark.asyncio
+async def test_set_and_get_barcode_provider_config(repo: InventoryRepository) -> None:
+    await repo.set_barcode_provider_config({"provider": "openfoodfacts"})
+    config = await repo.get_barcode_provider_config()
+    assert config == {"provider": "openfoodfacts"}
+
+
+@pytest.mark.asyncio
+async def test_set_barcode_provider_config_overwrites(repo: InventoryRepository) -> None:
+    await repo.set_barcode_provider_config({"provider": "openfoodfacts"})
+    await repo.set_barcode_provider_config({"provider": "custom_provider"})
+    config = await repo.get_barcode_provider_config()
+    assert config == {"provider": "custom_provider"}

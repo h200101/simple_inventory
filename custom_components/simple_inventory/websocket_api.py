@@ -10,7 +10,8 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
-from .services.domain_data import get_coordinators
+from .providers.registry import create_provider
+from .services.domain_data import get_coordinators, get_repository
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,6 +27,9 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_get_item_consumption_rates)
     websocket_api.async_register_command(hass, ws_get_inventory_consumption_rates)
     websocket_api.async_register_command(hass, ws_lookup_by_barcode)
+    websocket_api.async_register_command(hass, ws_lookup_barcode_product)
+    websocket_api.async_register_command(hass, ws_get_barcode_provider_config)
+    websocket_api.async_register_command(hass, ws_set_barcode_provider_config)
     websocket_api.async_register_command(hass, ws_scan_barcode)
 
 
@@ -427,6 +431,7 @@ async def _handle_scan_barcode(
     action = msg["action"]
     amount = msg.get("amount", 1.0)
     inventory_id = msg.get("inventory_id")
+    price = msg.get("price")
 
     coordinators = get_coordinators(hass)
     if not coordinators:
@@ -446,7 +451,9 @@ async def _handle_scan_barcode(
         coordinator = next(iter(coordinators.values()))
 
     try:
-        result = await coordinator.async_scan_barcode(barcode, action, amount, inventory_id)
+        result = await coordinator.async_scan_barcode(
+            barcode, action, amount, inventory_id, price=price
+        )
         connection.send_result(msg["id"], result)
     except ValueError as exc:
         connection.send_error(msg["id"], "scan_failed", str(exc))
@@ -468,6 +475,103 @@ async def ws_lookup_by_barcode(
     await _handle_lookup_by_barcode(hass, connection, msg)
 
 
+async def _handle_lookup_barcode_product(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Look up a barcode in an external product database."""
+    barcode = msg["barcode"]
+    repository = get_repository(hass)
+    config = await repository.get_barcode_provider_config() if repository else {}
+    provider_name = config.get("provider")
+    provider = create_provider(hass, provider_name)
+    try:
+        product = await provider.async_lookup(barcode)
+    finally:
+        await provider.async_close()
+    if product is None:
+        connection.send_result(msg["id"], {"found": False, "barcode": barcode})
+    else:
+        connection.send_result(msg["id"], {"found": True, "barcode": barcode, "product": product})
+
+
+async def _handle_get_barcode_provider_config(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Return the current barcode provider configuration."""
+    repository = get_repository(hass)
+    if repository is None:
+        connection.send_result(msg["id"], {})
+        return
+    config = await repository.get_barcode_provider_config()
+    connection.send_result(msg["id"], config)
+
+
+async def _handle_set_barcode_provider_config(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Set the barcode provider configuration."""
+    provider = msg["provider"]
+    repository = get_repository(hass)
+    if repository is None:
+        connection.send_error(msg["id"], "no_repository", "Repository not available")
+        return
+    await repository.set_barcode_provider_config({"provider": provider})
+    connection.send_result(msg["id"], {"provider": provider})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/lookup_barcode_product",
+        vol.Required("barcode"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_lookup_barcode_product(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """WS command: lookup barcode product."""
+    await _handle_lookup_barcode_product(hass, connection, msg)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/get_barcode_provider_config",
+    }
+)
+@websocket_api.async_response
+async def ws_get_barcode_provider_config(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """WS command: get barcode provider config."""
+    await _handle_get_barcode_provider_config(hass, connection, msg)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/set_barcode_provider_config",
+        vol.Required("provider"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_set_barcode_provider_config(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """WS command: set barcode provider config."""
+    await _handle_set_barcode_provider_config(hass, connection, msg)
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): f"{DOMAIN}/scan_barcode",
@@ -475,6 +579,7 @@ async def ws_lookup_by_barcode(
         vol.Required("action"): vol.In(["increment", "decrement", "lookup"]),
         vol.Optional("amount", default=1.0): float,
         vol.Optional("inventory_id"): str,
+        vol.Optional("price"): float,
     }
 )
 @websocket_api.async_response

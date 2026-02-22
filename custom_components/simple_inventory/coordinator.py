@@ -9,8 +9,10 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
+import aiosqlite
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 
 from .const import (
     ANALYTICS_MIN_EVENTS,
@@ -21,6 +23,7 @@ from .const import (
     DEFAULT_EXPIRY_ALERT_DAYS,
     DEFAULT_EXPIRY_DATE,
     DEFAULT_LOCATION,
+    DEFAULT_PRICE,
     DEFAULT_QUANTITY,
     DEFAULT_TODO_LIST,
     DEFAULT_TODO_QUANTITY_PLACEMENT,
@@ -42,6 +45,7 @@ from .const import (
     FIELD_EXPIRY_DATE,
     FIELD_LOCATION,
     FIELD_NAME,
+    FIELD_PRICE,
     FIELD_QUANTITY,
     FIELD_TODO_LIST,
     FIELD_TODO_QUANTITY_PLACEMENT,
@@ -71,6 +75,7 @@ class SimpleInventoryCoordinator:
         FIELD_QUANTITY,
         FIELD_AUTO_ADD_TO_LIST_QUANTITY,
         FIELD_DESIRED_QUANTITY,
+        FIELD_PRICE,
     }
     _BOOLEAN_FIELDS = {
         FIELD_AUTO_ADD_ENABLED,
@@ -177,6 +182,10 @@ class SimpleInventoryCoordinator:
             FIELD_TODO_QUANTITY_PLACEMENT: kwargs.get(
                 FIELD_TODO_QUANTITY_PLACEMENT, DEFAULT_TODO_QUANTITY_PLACEMENT
             ),
+            FIELD_PRICE: max(
+                0,
+                float(kwargs.get(FIELD_PRICE, DEFAULT_PRICE)),
+            ),
         }
 
         item_id = await self.repository.create_item(inventory_id, item_payload)
@@ -190,6 +199,7 @@ class SimpleInventoryCoordinator:
         )
         await self._apply_category_updates(item_id, kwargs.get(FIELD_CATEGORY, DEFAULT_CATEGORY))
 
+        item_price = float(item_payload.get(FIELD_PRICE, 0))
         await self.repository.record_history_event(
             item_id=item_id,
             inventory_id=inventory_id,
@@ -197,6 +207,7 @@ class SimpleInventoryCoordinator:
             amount=quantity,
             quantity_before=0,
             quantity_after=quantity,
+            price=item_price,
         )
 
         await self._after_change(inventory_id)
@@ -310,6 +321,7 @@ class SimpleInventoryCoordinator:
         amount: float = 1,
         *,
         barcode: str | None = None,
+        price: float | None = None,
     ) -> bool:
         """Increment quantity."""
         if amount < 0:
@@ -321,7 +333,7 @@ class SimpleInventoryCoordinator:
             return False
 
         resolved_name = await self._resolve_item_name(inventory_id, name, barcode)
-        return await self._adjust_quantity(inventory_id, resolved_name, amount)
+        return await self._adjust_quantity(inventory_id, resolved_name, amount, price=price)
 
     async def async_decrement_item(
         self,
@@ -330,6 +342,7 @@ class SimpleInventoryCoordinator:
         amount: float = 1,
         *,
         barcode: str | None = None,
+        price: float | None = None,
     ) -> bool:
         """Decrement quantity."""
         if amount < 0:
@@ -341,7 +354,7 @@ class SimpleInventoryCoordinator:
             return False
 
         resolved_name = await self._resolve_item_name(inventory_id, name, barcode)
-        return await self._adjust_quantity(inventory_id, resolved_name, -amount)
+        return await self._adjust_quantity(inventory_id, resolved_name, -amount, price=price)
 
     async def async_get_item(self, inventory_id: str, name: str) -> dict[str, Any] | None:
         """Return item data by name."""
@@ -359,6 +372,7 @@ class SimpleInventoryCoordinator:
         action: str,
         amount: float = 1.0,
         inventory_id: str | None = None,
+        price: float | None = None,
     ) -> dict[str, Any]:
         """Scan a barcode and perform an action (increment/decrement/lookup)."""
         await self.async_initialize()
@@ -390,7 +404,7 @@ class SimpleInventoryCoordinator:
 
         if action == "increment":
             result = await self.async_increment_item(
-                resolved_inventory_id, name=item_name, amount=amount
+                resolved_inventory_id, name=item_name, amount=amount, price=price
             )
             return {
                 "action": "increment",
@@ -402,7 +416,7 @@ class SimpleInventoryCoordinator:
 
         if action == "decrement":
             result = await self.async_decrement_item(
-                resolved_inventory_id, name=item_name, amount=amount
+                resolved_inventory_id, name=item_name, amount=amount, price=price
             )
             return {
                 "action": "decrement",
@@ -453,11 +467,18 @@ class SimpleInventoryCoordinator:
                     }
                 )
 
+        total_value = sum(
+            float(item.get(FIELD_QUANTITY, 0)) * float(item.get(FIELD_PRICE, 0))
+            for item in items
+            if float(item.get(FIELD_PRICE, 0)) > 0
+        )
+
         expiring_items = await self.async_get_items_expiring_soon(inventory_id)
 
         return {
             "total_items": total_items,
             "total_quantity": total_quantity,
+            "total_value": total_value,
             "categories": categories,
             "locations": locations,
             "below_threshold": below_threshold,
@@ -593,6 +614,23 @@ class SimpleInventoryCoordinator:
 
         avg_restock_days = _compute_avg_restock_days(raw.get("restock_timestamps", []))
 
+        # Spend rate calculations
+        total_spend = raw.get("total_spend", 0.0)
+        restock_spend_count = raw.get("restock_spend_count", 0)
+        daily_spend_rate: float | None = None
+        weekly_spend_rate: float | None = None
+
+        if restock_spend_count > 0 and total_spend > 0:
+            if window_days is not None:
+                spend_span = float(window_days)
+            elif first_event_ts:
+                first_dt = datetime.fromisoformat(first_event_ts)
+                spend_span = max((datetime.utcnow() - first_dt).total_seconds() / 86400, 1.0)
+            else:
+                spend_span = 1.0
+            daily_spend_rate = round(total_spend / spend_span, 4)
+            weekly_spend_rate = round(daily_spend_rate * 7, 4)
+
         return {
             "decrement_count": decrement_count,
             "total_consumed": total_consumed,
@@ -602,6 +640,9 @@ class SimpleInventoryCoordinator:
             "days_until_depletion": days_until_depletion,
             "avg_restock_days": avg_restock_days,
             "has_sufficient_data": has_sufficient_data,
+            "total_spend": total_spend if total_spend > 0 else None,
+            "daily_spend_rate": daily_spend_rate,
+            "weekly_spend_rate": weekly_spend_rate,
         }
 
     async def async_get_item_consumption_rates(
@@ -832,6 +873,7 @@ class SimpleInventoryCoordinator:
             FIELD_DESCRIPTION: str(item_data.get(FIELD_DESCRIPTION, "")),
             FIELD_QUANTITY: float(item_data.get(FIELD_QUANTITY, 0)),
             FIELD_UNIT: str(item_data.get(FIELD_UNIT, DEFAULT_UNIT)),
+            FIELD_PRICE: float(item_data.get(FIELD_PRICE, DEFAULT_PRICE)),
             FIELD_EXPIRY_DATE: str(item_data.get(FIELD_EXPIRY_DATE, DEFAULT_EXPIRY_DATE)),
             FIELD_EXPIRY_ALERT_DAYS: int(
                 item_data.get(FIELD_EXPIRY_ALERT_DAYS, DEFAULT_EXPIRY_ALERT_DAYS)
@@ -859,6 +901,7 @@ class SimpleInventoryCoordinator:
             "description",
             "quantity",
             "unit",
+            "price",
             "location",
             "category",
             "expiry_date",
@@ -878,6 +921,7 @@ class SimpleInventoryCoordinator:
                 "description": item.get(FIELD_DESCRIPTION, ""),
                 "quantity": item.get(FIELD_QUANTITY, 0),
                 "unit": item.get(FIELD_UNIT, ""),
+                "price": item.get(FIELD_PRICE, 0),
                 "location": ", ".join(item.get("locations", [])) or item.get(FIELD_LOCATION, ""),
                 "category": ", ".join(item.get("categories", [])) or item.get(FIELD_CATEGORY, ""),
                 "expiry_date": item.get(FIELD_EXPIRY_DATE, ""),
@@ -902,6 +946,7 @@ class SimpleInventoryCoordinator:
                 FIELD_DESCRIPTION: row.get("description", ""),
                 FIELD_QUANTITY: float(row.get("quantity", 0) or 0),
                 FIELD_UNIT: row.get("unit", ""),
+                FIELD_PRICE: float(row.get("price", 0) or 0),
                 FIELD_LOCATION: row.get("location", ""),
                 FIELD_CATEGORY: row.get("category", ""),
                 FIELD_EXPIRY_DATE: row.get("expiry_date", ""),
@@ -974,7 +1019,13 @@ class SimpleInventoryCoordinator:
             f"in inventory '{inventory_id}'"
         )
 
-    async def _adjust_quantity(self, inventory_id: str, name: str, delta: float) -> bool:
+    async def _adjust_quantity(
+        self,
+        inventory_id: str,
+        name: str,
+        delta: float,
+        price: float | None = None,
+    ) -> bool:
         await self.async_initialize()
 
         cleaned_name = self._validate_and_clean_name(name, "update quantity", inventory_id)
@@ -986,6 +1037,13 @@ class SimpleInventoryCoordinator:
                 inventory_id,
             )
             return False
+
+        # If a price is provided and > 0, update the item's price
+        if price is not None and price > 0:
+            await self.repository.update_item(item["id"], {FIELD_PRICE: price})
+            item_price = price
+        else:
+            item_price = float(item.get(FIELD_PRICE, 0))
 
         qty_before = float(item.get(FIELD_QUANTITY, 0))
         new_quantity = max(0, qty_before + delta)
@@ -999,6 +1057,7 @@ class SimpleInventoryCoordinator:
                 amount=abs(delta),
                 quantity_before=qty_before,
                 quantity_after=new_quantity,
+                price=item_price,
             )
 
             if new_quantity == 0 and qty_before > 0:
@@ -1048,7 +1107,12 @@ class SimpleInventoryCoordinator:
             await self.repository.set_item_barcodes(item_id, inventory_id, [])
             return
 
-        await self.repository.set_item_barcodes(item_id, inventory_id, barcodes)
+        try:
+            await self.repository.set_item_barcodes(item_id, inventory_id, barcodes)
+        except aiosqlite.IntegrityError as exc:
+            raise HomeAssistantError(
+                "One or more barcodes are already assigned to another item" " in this inventory"
+            ) from exc
 
     async def _apply_location_updates(
         self,
@@ -1195,6 +1259,7 @@ class SimpleInventoryCoordinator:
             FIELD_DESCRIPTION,
             FIELD_EXPIRY_ALERT_DAYS,
             FIELD_EXPIRY_DATE,
+            FIELD_PRICE,
             FIELD_QUANTITY,
             FIELD_TODO_LIST,
             FIELD_TODO_QUANTITY_PLACEMENT,

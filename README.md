@@ -59,6 +59,7 @@ Each item has a **name** (required) and these optional fields:
 | `barcode` | UPC/EAN barcode for scanning |
 | `location` | Where the item is stored (supports multiple, comma-separated) |
 | `category` | Item category (supports multiple, comma-separated) |
+| `price` | Current unit price (updated when restocking or editing) |
 | `expiry_date` | Expiration date (YYYY-MM-DD) |
 | `expiry_alert_days` | Days before expiry to trigger alerts |
 
@@ -125,6 +126,20 @@ Track how fast you consume items. The integration calculates consumption rates b
 
 Rates can be calculated over a configurable time window (e.g. last 30, 60, or 90 days) or across all history. The companion card shows this data in a "Consumption" tab in the item history modal. You can also query rates via the service call or WebSocket API for use in automations.
 
+### Pricing
+
+Track item prices to see inventory value and spending trends. Each item has an optional `price` field representing the current unit price.
+
+- **Unit price**: Set when adding or editing an item. Update it whenever the price changes (e.g. at the next purchase).
+- **Price on restock**: `increment_item`, `decrement_item`, and `scan_barcode` accept an optional `price` parameter. When provided, it updates the item's stored unit price and records the price on the history event.
+- **Total value**: The inventory sensor includes a `total_value` attribute — the sum of `price × quantity` across all items with a price set. Items with `price = 0` are excluded.
+- **Spend analytics**: The consumption tab shows spend data computed from restocking (increment/add) events that have a price recorded:
+  - **Daily Spend** — Average daily purchasing cost over the observation window
+  - **Weekly Spend** — Average weekly purchasing cost
+  - **Total Spend** — Total money spent purchasing the item
+
+> **Note:** A price of 0 means "no price set", not "free". Items with no price are excluded from value and spend calculations.
+
 ### Events
 
 The integration fires Home Assistant events on key inventory transitions, enabling automations without polling sensor state.
@@ -165,6 +180,7 @@ Each inventory creates two sensors:
   - `inventory_id` — The config entry ID
   - `total_items` — Number of distinct items
   - `total_quantity` — Sum of all quantities
+  - `total_value` — Sum of `price × quantity` across all priced items
   - `categories` — Category names with item counts
   - `locations` — Location names with item counts
   - `below_threshold` — Items that need restocking (with `quantity_needed`)
@@ -206,6 +222,7 @@ data:
   unit: "boxes"
   category: "Frozen Foods"
   location: "Basement Freezer"
+  price: 8.99
   barcode: "012345678901"
   expiry_date: "2026-06-15"
   expiry_alert_days: 7
@@ -232,7 +249,7 @@ data:
 
 ### `simple_inventory.increment_item`
 
-Increase an item's quantity. Supports decimal amounts.
+Increase an item's quantity. Supports decimal amounts. Optionally pass `price` to update the item's unit price (e.g. when restocking at a new price).
 
 ```yaml
 service: simple_inventory.increment_item
@@ -240,6 +257,7 @@ data:
   inventory_id: "01JYFPCDMBRBRK4MB3C26S2FKH"
   name: "Frozen Pizza"
   amount: 3
+  price: 9.49
 ```
 
 You can also use `barcode` instead of `name`:
@@ -319,6 +337,7 @@ Example response:
       "desired_quantity": 5.0,
       "todo_list": "todo.grocery_list",
       "todo_quantity_placement": "name",
+      "price": 8.99,
       "description": "Family size pepperoni",
       "barcode": "012345678901",
       "barcodes": ["012345678901"]
@@ -388,7 +407,10 @@ Example response:
   "weekly_rate": 4.2,
   "days_until_depletion": 5,
   "avg_restock_days": 14.0,
-  "has_sufficient_data": true
+  "has_sufficient_data": true,
+  "total_spend": 53.94,
+  "daily_spend_rate": 1.80,
+  "weekly_spend_rate": 12.58
 }
 ```
 
@@ -399,6 +421,9 @@ Example response:
 | `days_until_depletion` | Estimated days until quantity reaches 0 (null if rate is 0 or insufficient data) |
 | `avg_restock_days` | Average days between increment events (null if fewer than 2 restocks) |
 | `has_sufficient_data` | `true` if there are at least 2 decrement events to calculate rates |
+| `total_spend` | Total money spent purchasing this item (null if no priced restock events) |
+| `daily_spend_rate` | Average daily purchasing cost (null if no priced restock events) |
+| `weekly_spend_rate` | Average weekly purchasing cost (null if no priced restock events) |
 
 ### `simple_inventory.lookup_by_barcode`
 
@@ -446,6 +471,7 @@ response_variable: result
 | `barcode` | Yes | The barcode to scan |
 | `action` | Yes | `"increment"`, `"decrement"`, or `"lookup"` |
 | `amount` | No | Amount to increment/decrement (default: 1, ignored for lookup) |
+| `price` | No | Unit price to record for this transaction (updates the item's stored price) |
 | `inventory_id` | No | Scope the search to a specific inventory. Required if the barcode exists in multiple inventories. |
 
 Example response (increment/decrement):
@@ -585,7 +611,10 @@ Returns:
   "weekly_rate": 4.2,
   "days_until_depletion": 5,
   "avg_restock_days": 14.0,
-  "has_sufficient_data": true
+  "has_sufficient_data": true,
+  "total_spend": 53.94,
+  "daily_spend_rate": 1.80,
+  "weekly_spend_rate": 12.58
 }
 ```
 
@@ -596,6 +625,9 @@ Returns:
 | `days_until_depletion` | Estimated days until quantity reaches 0 (null if rate is 0 or insufficient data) |
 | `avg_restock_days` | Average days between increment events (null if fewer than 2 restocks) |
 | `has_sufficient_data` | `true` if there are at least 2 decrement events to calculate rates |
+| `total_spend` | Total money spent purchasing this item (null if no priced restock events) |
+| `daily_spend_rate` | Average daily purchasing cost (null if no priced restock events) |
+| `weekly_spend_rate` | Average weekly purchasing cost (null if no priced restock events) |
 
 ### `simple_inventory/lookup_by_barcode`
 

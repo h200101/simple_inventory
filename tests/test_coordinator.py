@@ -1714,3 +1714,19 @@ async def test_apply_barcode_updates_empty_clears(
     await coordinator._apply_barcode_updates("kitchen_123", "item-1", "")
 
     mock_repository.set_item_barcodes.assert_awaited_once_with("item-1", "kitchen_123", [])
+
+
+@pytest.mark.asyncio
+async def test_apply_barcode_updates_duplicate_raises_ha_error(
+    coordinator: SimpleInventoryCoordinator, mock_repository: MagicMock
+) -> None:
+    """IntegrityError from duplicate barcode should surface as HomeAssistantError."""
+    import aiosqlite
+    from homeassistant.exceptions import HomeAssistantError
+
+    mock_repository.set_item_barcodes.side_effect = aiosqlite.IntegrityError(
+        "UNIQUE constraint failed"
+    )
+
+    with pytest.raises(HomeAssistantError, match="barcodes are already assigned"):
+        await coordinator._apply_barcode_updates("kitchen_123", "item-1", "DUPE-BC")
