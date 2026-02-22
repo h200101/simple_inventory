@@ -7,8 +7,9 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.util.json import JsonObjectType
 
 from ..const import DOMAIN
+from ..providers.registry import create_provider
 from ..todo_manager import TodoManager
-from .domain_data import get_coordinators
+from .domain_data import get_coordinators, get_repository
 from .inventory_service import InventoryService
 from .quantity_service import QuantityService
 
@@ -92,6 +93,7 @@ class ServiceHandler:
         action: str = data["action"]
         amount: float = data.get("amount", 1.0)
         inventory_id: str | None = data.get("inventory_id")
+        price: float | None = data.get("price")
 
         coordinators = get_coordinators(self.hass)
         if not coordinators:
@@ -104,8 +106,25 @@ class ServiceHandler:
         else:
             coordinator = next(iter(coordinators.values()))
 
-        result = await coordinator.async_scan_barcode(barcode, action, amount, inventory_id)
+        result = await coordinator.async_scan_barcode(
+            barcode, action, amount, inventory_id, price=price
+        )
         return cast(JsonObjectType, result)
+
+    async def async_lookup_barcode_product(self, call: ServiceCall) -> JsonObjectType:
+        """Look up a barcode in an external product database."""
+        barcode: str = call.data["barcode"]
+        repository = get_repository(self.hass)
+        config = await repository.get_barcode_provider_config() if repository else {}
+        provider_name = config.get("provider")
+        provider = create_provider(self.hass, provider_name)
+        try:
+            product = await provider.async_lookup(barcode)
+        finally:
+            await provider.async_close()
+        if product is None:
+            return cast(JsonObjectType, {"found": False, "barcode": barcode})
+        return cast(JsonObjectType, {"found": True, "barcode": barcode, "product": product})
 
     async def async_get_item_consumption_rates(self, call: ServiceCall) -> JsonObjectType:
         """Return consumption rates for a single item."""

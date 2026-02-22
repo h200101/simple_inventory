@@ -107,6 +107,10 @@
           "description": "Nom de l'article",
           "name": "Nom de l'article"
         },
+        "price": {
+          "description": "Prix unitaire de l'article",
+          "name": "Prix"
+        },
         "quantity": {
           "description": "Quantité de l'article",
           "name": "Quantité"
@@ -144,6 +148,10 @@
         "name": {
           "description": "Nom de l'article",
           "name": "Nom de l'article"
+        },
+        "price": {
+          "description": "Prix unitaire à enregistrer pour cette transaction",
+          "name": "Prix"
         }
       },
       "name": "Décrémenter un article"
@@ -203,9 +211,23 @@
         "name": {
           "description": "Nom de l'article",
           "name": "Nom de l'article"
+        },
+        "price": {
+          "description": "Prix unitaire à enregistrer pour cette transaction",
+          "name": "Prix"
         }
       },
       "name": "Incrémenter un article"
+    },
+    "lookup_barcode_product": {
+      "description": "Rechercher un code-barres dans une base de données de produits externe et retourner les informations du produit",
+      "fields": {
+        "barcode": {
+          "description": "Code-barres à rechercher (UPC, EAN, etc.)",
+          "name": "Code-barres"
+        }
+      },
+      "name": "Rechercher un produit par code-barres"
     },
     "lookup_by_barcode": {
       "description": "Rechercher un article par code-barres dans tous les inventaires",
@@ -253,6 +275,10 @@
         "inventory_id": {
           "description": "ID de l'inventaire optionnel pour limiter la recherche",
           "name": "ID de l'inventaire"
+        },
+        "price": {
+          "description": "Prix unitaire à enregistrer pour cette transaction",
+          "name": "Prix"
         }
       },
       "name": "Scanner un code-barres"
@@ -311,6 +337,10 @@
         "old_name": {
           "description": "Nom actuel de l'article",
           "name": "Nom actuel"
+        },
+        "price": {
+          "description": "Prix unitaire de l'article",
+          "name": "Prix"
         },
         "quantity": {
           "description": "Nouvelle quantité",

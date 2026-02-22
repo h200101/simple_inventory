@@ -6,6 +6,7 @@ import logging
 from typing import Any, cast
 
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util.json import JsonObjectType, JsonValueType
 
 from ..const import DOMAIN
@@ -38,6 +39,7 @@ class InventoryService(BaseServiceHandler):
         "expiry_alert_days",
         "expiry_date",
         "location",
+        "price",
         "quantity",
         "todo_list",
         "todo_quantity_placement",
@@ -117,6 +119,8 @@ class InventoryService(BaseServiceHandler):
 
             await self._save_and_log_success(coordinator, inventory_id, "Added item", name)
 
+        except HomeAssistantError:
+            raise
         except Exception as exc:
             _LOGGER.error(
                 "Failed to add item %s to inventory %s: %s",
@@ -207,6 +211,8 @@ class InventoryService(BaseServiceHandler):
                 new_name,
             )
 
+        except HomeAssistantError:
+            raise
         except Exception as exc:
             _LOGGER.error(
                 "Failed to update item %s in inventory %s: %s",

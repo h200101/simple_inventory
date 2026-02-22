@@ -36,6 +36,7 @@ ITEM_SCHEMA = {
     vol.Optional("todo_list"): cv.string,
     vol.Optional("todo_quantity_placement"): vol.In(["name", "description", "none"]),
     vol.Optional("unit"): cv.string,
+    vol.Optional("price"): vol.All(vol.Coerce(float), vol.Range(min=0)),
 }
 
 ADD_ITEM_SCHEMA = vol.Schema({INVENTORY_ID: cv.string, **ITEM_SCHEMA})
@@ -72,6 +73,7 @@ QUANTITY_UPDATE_SCHEMA = vol.Schema(
             vol.Optional("amount", default=DEFAULT_QUANTITY): vol.All(
                 vol.Coerce(float), vol.Range(min=0, min_included=False)
             ),
+            vol.Optional("price"): vol.All(vol.Coerce(float), vol.Range(min=0)),
         },
         _require_name_or_barcode,
     )
@@ -118,6 +120,12 @@ LOOKUP_BY_BARCODE_SCHEMA = vol.Schema(
     }
 )
 
+LOOKUP_BARCODE_PRODUCT_SCHEMA = vol.Schema(
+    {
+        vol.Required("barcode"): cv.string,
+    }
+)
+
 SCAN_BARCODE_SCHEMA = vol.Schema(
     {
         vol.Required("barcode"): cv.string,
@@ -126,6 +134,7 @@ SCAN_BARCODE_SCHEMA = vol.Schema(
             vol.Coerce(float), vol.Range(min=0, min_included=False)
         ),
         vol.Optional("inventory_id"): cv.string,
+        vol.Optional("price"): vol.All(vol.Coerce(float), vol.Range(min=0)),
     }
 )
 
@@ -138,6 +147,7 @@ ALL_SCHEMAS = {
     "get_items": GET_ITEMS_SCHEMA,
     "get_items_from_all_inventories": GET_ALL_ITEMS_SCHEMA,
     "get_item_consumption_rates": GET_ITEM_CONSUMPTION_RATES_SCHEMA,
+    "lookup_barcode_product": LOOKUP_BARCODE_PRODUCT_SCHEMA,
     "lookup_by_barcode": LOOKUP_BY_BARCODE_SCHEMA,
     "scan_barcode": SCAN_BARCODE_SCHEMA,
 }

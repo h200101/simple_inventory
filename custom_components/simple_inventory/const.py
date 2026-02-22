@@ -13,6 +13,7 @@ SERVICE_GET_ITEMS: Final = "get_items"
 SERVICE_GET_ALL_ITEMS: Final = "get_items_from_all_inventories"
 SERVICE_GET_ITEM_CONSUMPTION_RATES: Final = "get_item_consumption_rates"
 SERVICE_LOOKUP_BY_BARCODE: Final = "lookup_by_barcode"
+SERVICE_LOOKUP_BARCODE_PRODUCT: Final = "lookup_barcode_product"
 SERVICE_SCAN_BARCODE: Final = "scan_barcode"
 
 # Item Fields (for data structure), needs to match params constants in frontend
@@ -41,6 +42,7 @@ FIELD_START_DATE: Final = "start_date"
 FIELD_TODO_LIST: Final = "todo_list"
 FIELD_TODO_QUANTITY_PLACEMENT: Final = "todo_quantity_placement"
 FIELD_TO_LOCATION: Final = "to_location"
+FIELD_PRICE: Final = "price"
 FIELD_UNIT: Final = "unit"
 
 DEFAULT_AUTO_ADD_ENABLED: Final = False
@@ -54,6 +56,7 @@ DEFAULT_TODO_LIST: Final = ""
 DEFAULT_TODO_QUANTITY_PLACEMENT: Final = "name"
 DEFAULT_UNIT: Final = ""
 DEFAULT_LOCATION: Final = ""
+DEFAULT_PRICE: Final = 0
 
 ANALYTICS_MIN_EVENTS: Final = 2
 

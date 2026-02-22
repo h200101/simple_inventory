@@ -24,6 +24,7 @@ class AddItemServiceData(TypedDict):
     inventory_id: str
     location: NotRequired[str]
     name: str
+    price: NotRequired[float]
     quantity: NotRequired[float]
     todo_list: NotRequired[str]
     todo_quantity_placement: NotRequired[str]
@@ -46,6 +47,7 @@ class UpdateItemServiceData(TypedDict):
     location: NotRequired[str]
     name: str
     old_name: str
+    price: NotRequired[float]
     quantity: NotRequired[float]
     todo_list: NotRequired[str]
     todo_quantity_placement: NotRequired[str]
@@ -89,6 +91,7 @@ class InventoryItem(TypedDict, total=False):
     inventory_id: str
     location: str
     name: str
+    price: float
     quantity: float
     todo_list: str
     todo_quantity_placement: str

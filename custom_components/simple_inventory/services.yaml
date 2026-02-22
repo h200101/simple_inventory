@@ -36,6 +36,15 @@ add_item:
       default: ""
       selector:
         text:
+    price:
+      description: Unit price of the item
+      example: 4.99
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          step: 0.01
     category:
       description: Category of the item. Supports multiple categories as a comma-separated list.
       example: "Prepared Foods, Frozen"
@@ -175,6 +184,14 @@ increment_item:
         number:
           min: 0.1
           step: 0.1
+    price:
+      description: Unit price to record for this transaction
+      example: 4.99
+      required: false
+      selector:
+        number:
+          min: 0
+          step: 0.01
 
 decrement_item:
   description: Decrement the quantity of an item
@@ -206,6 +223,14 @@ decrement_item:
         number:
           min: 0.1
           step: 0.1
+    price:
+      description: Unit price to record for this transaction
+      example: 4.99
+      required: false
+      selector:
+        number:
+          min: 0
+          step: 0.01
 
 update_item:
   description: Update an existing inventory item
@@ -248,6 +273,14 @@ update_item:
       required: false
       selector:
         text:
+    price:
+      description: Unit price of the item
+      example: 4.99
+      required: false
+      selector:
+        number:
+          min: 0
+          step: 0.01
     category:
       description: Category. Supports multiple categories as a comma-separated list.
       example: "Frozen Foods, Prepared Foods"
@@ -349,6 +382,16 @@ get_items_from_all_inventories:
   description: Return the full list of items grouped by inventory.
   fields: {}
 
+lookup_barcode_product:
+  description: Look up a barcode in an external product database (e.g. Open Food Facts) and return product information.
+  fields:
+    barcode:
+      description: Barcode to look up (UPC, EAN, etc.). Must be quoted in YAML if it has leading zeros.
+      example: "012345678901"
+      required: true
+      selector:
+        text:
+
 lookup_by_barcode:
   description: Look up an item by barcode across all inventories. Returns all matching items.
   fields:
@@ -393,6 +436,14 @@ scan_barcode:
       required: false
       selector:
         text:
+    price:
+      description: Unit price to record for this transaction
+      example: 4.99
+      required: false
+      selector:
+        number:
+          min: 0
+          step: 0.01
 
 get_item_consumption_rates:
   description: Get consumption analytics for a specific item based on its decrement history. Returns daily/weekly rates, days until depletion, and average restock interval.

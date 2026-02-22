@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from custom_components.simple_inventory.const import DOMAIN
 from custom_components.simple_inventory.websocket_api import (
     _handle_export,
+    _handle_get_barcode_provider_config,
     _handle_get_history,
     _handle_get_inventory_consumption_rates,
     _handle_get_item,
     _handle_get_item_consumption_rates,
     _handle_import,
     _handle_list_items,
+    _handle_lookup_barcode_product,
     _handle_lookup_by_barcode,
     _handle_scan_barcode,
+    _handle_set_barcode_provider_config,
     _handle_subscribe,
 )
 
@@ -510,7 +513,7 @@ class TestHandleScanBarcode:
         await _handle_scan_barcode(hass_mock, mock_connection, msg)
 
         mock_coordinator_ws.async_scan_barcode.assert_awaited_once_with(
-            "123456", "increment", 1.0, None
+            "123456", "increment", 1.0, None, price=None
         )
         mock_connection.send_result.assert_called_once()
 
@@ -564,4 +567,106 @@ class TestHandleScanBarcode:
 
         mock_connection.send_error.assert_called_once_with(
             83, "scan_failed", "No item found for barcode '000' in any inventory"
+        )
+
+
+class TestHandleLookupBarcodeProduct:
+    async def test_lookup_found(self, hass_mock: MagicMock, mock_connection: MagicMock) -> None:
+        mock_repo = MagicMock()
+        mock_repo.get_barcode_provider_config = AsyncMock(return_value={})
+        hass_mock.data[DOMAIN]["repository"] = mock_repo
+
+        product = {"name": "Tomato Soup", "brand": "Campbell's"}
+        mock_provider = MagicMock()
+        mock_provider.async_lookup = AsyncMock(return_value=product)
+        mock_provider.async_close = AsyncMock()
+
+        with patch(
+            "custom_components.simple_inventory.websocket_api.create_provider",
+            return_value=mock_provider,
+        ):
+            msg = {"id": 90, "type": f"{DOMAIN}/lookup_barcode_product", "barcode": "123456"}
+            await _handle_lookup_barcode_product(hass_mock, mock_connection, msg)
+
+        mock_connection.send_result.assert_called_once_with(
+            90, {"found": True, "barcode": "123456", "product": product}
+        )
+
+    async def test_lookup_not_found(self, hass_mock: MagicMock, mock_connection: MagicMock) -> None:
+        mock_repo = MagicMock()
+        mock_repo.get_barcode_provider_config = AsyncMock(return_value={})
+        hass_mock.data[DOMAIN]["repository"] = mock_repo
+
+        mock_provider = MagicMock()
+        mock_provider.async_lookup = AsyncMock(return_value=None)
+        mock_provider.async_close = AsyncMock()
+
+        with patch(
+            "custom_components.simple_inventory.websocket_api.create_provider",
+            return_value=mock_provider,
+        ):
+            msg = {"id": 91, "type": f"{DOMAIN}/lookup_barcode_product", "barcode": "000000"}
+            await _handle_lookup_barcode_product(hass_mock, mock_connection, msg)
+
+        mock_connection.send_result.assert_called_once_with(
+            91, {"found": False, "barcode": "000000"}
+        )
+
+
+class TestHandleGetBarcodeProviderConfig:
+    async def test_returns_config(self, hass_mock: MagicMock, mock_connection: MagicMock) -> None:
+        mock_repo = MagicMock()
+        mock_repo.get_barcode_provider_config = AsyncMock(
+            return_value={"provider": "openfoodfacts"}
+        )
+        hass_mock.data[DOMAIN]["repository"] = mock_repo
+
+        msg = {"id": 100, "type": f"{DOMAIN}/get_barcode_provider_config"}
+        await _handle_get_barcode_provider_config(hass_mock, mock_connection, msg)
+
+        mock_connection.send_result.assert_called_once_with(100, {"provider": "openfoodfacts"})
+
+    async def test_no_repository_returns_empty(
+        self, hass_mock: MagicMock, mock_connection: MagicMock
+    ) -> None:
+        hass_mock.data[DOMAIN]["repository"] = None
+
+        msg = {"id": 101, "type": f"{DOMAIN}/get_barcode_provider_config"}
+        await _handle_get_barcode_provider_config(hass_mock, mock_connection, msg)
+
+        mock_connection.send_result.assert_called_once_with(101, {})
+
+
+class TestHandleSetBarcodeProviderConfig:
+    async def test_sets_provider(self, hass_mock: MagicMock, mock_connection: MagicMock) -> None:
+        mock_repo = MagicMock()
+        mock_repo.set_barcode_provider_config = AsyncMock()
+        hass_mock.data[DOMAIN]["repository"] = mock_repo
+
+        msg = {
+            "id": 110,
+            "type": f"{DOMAIN}/set_barcode_provider_config",
+            "provider": "openfoodfacts",
+        }
+        await _handle_set_barcode_provider_config(hass_mock, mock_connection, msg)
+
+        mock_repo.set_barcode_provider_config.assert_awaited_once_with(
+            {"provider": "openfoodfacts"}
+        )
+        mock_connection.send_result.assert_called_once_with(110, {"provider": "openfoodfacts"})
+
+    async def test_no_repository_sends_error(
+        self, hass_mock: MagicMock, mock_connection: MagicMock
+    ) -> None:
+        hass_mock.data[DOMAIN]["repository"] = None
+
+        msg = {
+            "id": 111,
+            "type": f"{DOMAIN}/set_barcode_provider_config",
+            "provider": "openfoodfacts",
+        }
+        await _handle_set_barcode_provider_config(hass_mock, mock_connection, msg)
+
+        mock_connection.send_error.assert_called_once_with(
+            111, "no_repository", "Repository not available"
         )

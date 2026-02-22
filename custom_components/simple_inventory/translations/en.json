@@ -107,6 +107,10 @@
           "description": "Name of the item",
           "name": "Item Name"
         },
+        "price": {
+          "description": "Unit price of the item",
+          "name": "Price"
+        },
         "quantity": {
           "description": "Quantity of the item",
           "name": "Quantity"
@@ -144,6 +148,10 @@
         "name": {
           "description": "Name of the item",
           "name": "Item Name"
+        },
+        "price": {
+          "description": "Unit price to record for this transaction",
+          "name": "Price"
         }
       },
       "name": "Decrement Item"
@@ -203,9 +211,23 @@
         "name": {
           "description": "Name of the item",
           "name": "Item Name"
+        },
+        "price": {
+          "description": "Unit price to record for this transaction",
+          "name": "Price"
         }
       },
       "name": "Increment Item"
+    },
+    "lookup_barcode_product": {
+      "description": "Look up a barcode in an external product database and return product information",
+      "fields": {
+        "barcode": {
+          "description": "Barcode to look up (UPC, EAN, etc.)",
+          "name": "Barcode"
+        }
+      },
+      "name": "Lookup Barcode Product"
     },
     "lookup_by_barcode": {
       "description": "Look up an item by barcode across all inventories",
@@ -253,6 +275,10 @@
         "inventory_id": {
           "description": "Optional inventory ID to scope the search",
           "name": "Inventory ID"
+        },
+        "price": {
+          "description": "Unit price to record for this transaction",
+          "name": "Price"
         }
       },
       "name": "Scan Barcode"
@@ -311,6 +337,10 @@
         "old_name": {
           "description": "Current name of the item",
           "name": "Current Name"
+        },
+        "price": {
+          "description": "Unit price of the item",
+          "name": "Price"
         },
         "quantity": {
           "description": "New quantity",
