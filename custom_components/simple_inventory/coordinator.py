@@ -12,7 +12,7 @@ from typing import Any, Callable
 import aiosqlite
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from .const import (
     ANALYTICS_MIN_EVENTS,
@@ -380,17 +380,19 @@ class SimpleInventoryCoordinator:
         if inventory_id:
             item = await self.repository.get_item_by_barcode(inventory_id, barcode)
             if item is None:
-                raise ValueError(
+                raise ServiceValidationError(
                     f"No item found for barcode '{barcode}' in inventory '{inventory_id}'"
                 )
             resolved_inventory_id = inventory_id
         else:
             matches = await self.repository.get_item_by_barcode_global(barcode)
             if not matches:
-                raise ValueError(f"No item found for barcode '{barcode}' in any inventory")
+                raise ServiceValidationError(
+                    f"No item found for barcode '{barcode}' in any inventory"
+                )
             if len(matches) > 1:
                 inv_names = [m.get("inventory_name", m["inventory_id"]) for m in matches]
-                raise ValueError(
+                raise ServiceValidationError(
                     f"Barcode '{barcode}' found in multiple inventories: "
                     f"{', '.join(inv_names)}. Specify inventory_id to disambiguate."
                 )
@@ -1009,12 +1011,12 @@ class SimpleInventoryCoordinator:
         if barcode and barcode.strip():
             item = await self.repository.get_item_by_barcode(inventory_id, barcode.strip())
             if item is None:
-                raise ValueError(
+                raise ServiceValidationError(
                     f"No item found for barcode '{barcode}' in inventory '{inventory_id}'"
                 )
             return str(item[FIELD_NAME])
 
-        raise ValueError(
+        raise ServiceValidationError(
             f"Either 'name' or 'barcode' is required to identify an item "
             f"in inventory '{inventory_id}'"
         )
