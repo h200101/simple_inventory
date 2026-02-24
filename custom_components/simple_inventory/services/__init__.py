@@ -109,6 +109,17 @@ class ServiceHandler:
         result = await coordinator.async_scan_barcode(
             barcode, action, amount, inventory_id, price=price
         )
+
+        if result.get("success") and action in ("increment", "decrement"):
+            item_name: str = result["item_name"]
+            resolved_inventory_id: str = result["inventory_id"]
+            item_data = await coordinator.async_get_item(resolved_inventory_id, item_name)
+            if item_data:
+                if action == "decrement":
+                    await self.todo_manager.check_and_add_item(item_name, item_data)  # type: ignore[arg-type]
+                else:
+                    await self.todo_manager.check_and_remove_item(item_name, item_data)  # type: ignore[arg-type]
+
         return cast(JsonObjectType, result)
 
     async def async_lookup_barcode_product(self, call: ServiceCall) -> JsonObjectType:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.simple_inventory.const import DOMAIN
 from custom_components.simple_inventory.websocket_api import (
@@ -549,12 +550,48 @@ class TestHandleScanBarcode:
             82, "no_inventories", "No inventories configured"
         )
 
+    async def test_scan_decrement_calls_todo_add(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
+        """WebSocket scan_barcode decrement must trigger check_and_add_item."""
+        item_data = {"name": "Milk", "quantity": 0.0, "auto_add_enabled": True}
+        mock_coordinator_ws.async_scan_barcode = AsyncMock(
+            return_value={
+                "action": "decrement",
+                "success": True,
+                "item_name": "Milk",
+                "inventory_id": "inv1",
+                "amount": 1.0,
+            }
+        )
+        mock_coordinator_ws.async_get_item = AsyncMock(return_value=item_data)
+
+        mock_todo_manager = MagicMock()
+        mock_todo_manager.check_and_add_item = AsyncMock()
+        mock_todo_manager.check_and_remove_item = AsyncMock()
+        hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
+        hass_mock.data[DOMAIN]["todo_manager"] = mock_todo_manager
+
+        msg = {
+            "id": 84,
+            "type": f"{DOMAIN}/scan_barcode",
+            "barcode": "123456",
+            "action": "decrement",
+            "amount": 1.0,
+            "inventory_id": "inv1",
+        }
+
+        await _handle_scan_barcode(hass_mock, mock_connection, msg)
+
+        mock_todo_manager.check_and_add_item.assert_awaited_once_with("Milk", item_data)
+        mock_todo_manager.check_and_remove_item.assert_not_called()
+
     async def test_scan_error_forwarded(
         self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
     ) -> None:
         hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
         mock_coordinator_ws.async_scan_barcode = AsyncMock(
-            side_effect=ValueError("No item found for barcode '000' in any inventory")
+            side_effect=ServiceValidationError("No item found for barcode '000' in any inventory")
         )
         msg = {
             "id": 83,

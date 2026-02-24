@@ -8,10 +8,11 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN
 from .providers.lookup import async_lookup_barcode_all_providers
-from .services.domain_data import get_coordinators, get_repository
+from .services.domain_data import get_coordinators, get_repository, get_todo_manager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -454,9 +455,23 @@ async def _handle_scan_barcode(
         result = await coordinator.async_scan_barcode(
             barcode, action, amount, inventory_id, price=price
         )
-        connection.send_result(msg["id"], result)
-    except ValueError as exc:
+    except HomeAssistantError as exc:
         connection.send_error(msg["id"], "scan_failed", str(exc))
+        return
+
+    connection.send_result(msg["id"], result)
+
+    if result.get("success") and action in ("increment", "decrement"):
+        todo_manager = get_todo_manager(hass)
+        if todo_manager:
+            item_name: str = result["item_name"]
+            resolved_inventory_id: str = result["inventory_id"]
+            item_data = await coordinator.async_get_item(resolved_inventory_id, item_name)
+            if item_data:
+                if action == "decrement":
+                    await todo_manager.check_and_add_item(item_name, item_data)  # type: ignore[arg-type]
+                else:
+                    await todo_manager.check_and_remove_item(item_name, item_data)  # type: ignore[arg-type]
 
 
 @websocket_api.websocket_command(

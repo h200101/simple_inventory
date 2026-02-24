@@ -233,6 +233,92 @@ class TestServiceHandler:
             assert event_name == f"{DOMAIN}_get_all_items_result"
             assert payload["context_id"] == "ctx-123"
 
+    @pytest.mark.asyncio
+    async def test_scan_barcode_decrement_calls_todo_add(
+        self: Self,
+        mock_hass: MagicMock,
+        mock_todo_manager: MagicMock,
+    ) -> None:
+        """scan_barcode with decrement must call check_and_add_item (shopping list)."""
+        mock_todo_manager.check_and_add_item = AsyncMock()
+        mock_todo_manager.check_and_remove_item = AsyncMock()
+
+        item_data = {"name": "Milk", "quantity": 0.0, "auto_add_enabled": True}
+        mock_coordinator = MagicMock()
+        mock_coordinator.async_scan_barcode = AsyncMock(
+            return_value={
+                "action": "decrement",
+                "success": True,
+                "item_name": "Milk",
+                "inventory_id": "kitchen",
+                "amount": 1.0,
+            }
+        )
+        mock_coordinator.async_get_item = AsyncMock(return_value=item_data)
+
+        call = MagicMock()
+        call.data = {
+            "barcode": "123456",
+            "action": "decrement",
+            "amount": 1.0,
+            "inventory_id": "kitchen",
+        }
+
+        with patch("custom_components.simple_inventory.services.get_coordinators") as mock_gc:
+            mock_gc.return_value = {"kitchen": mock_coordinator}
+            with (
+                patch("custom_components.simple_inventory.services.InventoryService"),
+                patch("custom_components.simple_inventory.services.QuantityService"),
+            ):
+                handler = ServiceHandler(mock_hass, mock_todo_manager)
+                await handler.async_scan_barcode(call)
+
+        mock_todo_manager.check_and_add_item.assert_awaited_once_with("Milk", item_data)
+        mock_todo_manager.check_and_remove_item.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_scan_barcode_increment_calls_todo_remove(
+        self: Self,
+        mock_hass: MagicMock,
+        mock_todo_manager: MagicMock,
+    ) -> None:
+        """scan_barcode with increment must call check_and_remove_item."""
+        mock_todo_manager.check_and_add_item = AsyncMock()
+        mock_todo_manager.check_and_remove_item = AsyncMock()
+
+        item_data = {"name": "Milk", "quantity": 2.0, "auto_add_enabled": True}
+        mock_coordinator = MagicMock()
+        mock_coordinator.async_scan_barcode = AsyncMock(
+            return_value={
+                "action": "increment",
+                "success": True,
+                "item_name": "Milk",
+                "inventory_id": "kitchen",
+                "amount": 1.0,
+            }
+        )
+        mock_coordinator.async_get_item = AsyncMock(return_value=item_data)
+
+        call = MagicMock()
+        call.data = {
+            "barcode": "123456",
+            "action": "increment",
+            "amount": 1.0,
+            "inventory_id": "kitchen",
+        }
+
+        with patch("custom_components.simple_inventory.services.get_coordinators") as mock_gc:
+            mock_gc.return_value = {"kitchen": mock_coordinator}
+            with (
+                patch("custom_components.simple_inventory.services.InventoryService"),
+                patch("custom_components.simple_inventory.services.QuantityService"),
+            ):
+                handler = ServiceHandler(mock_hass, mock_todo_manager)
+                await handler.async_scan_barcode(call)
+
+        mock_todo_manager.check_and_remove_item.assert_awaited_once_with("Milk", item_data)
+        mock_todo_manager.check_and_add_item.assert_not_called()
+
     def test_exports(self: Self) -> None:
         """Test that __all__ exports are correct."""
         from custom_components.simple_inventory.services import __all__
