@@ -8,10 +8,11 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN
-from .providers.registry import create_provider
-from .services.domain_data import get_coordinators, get_repository
+from .providers.lookup import async_lookup_barcode_all_providers
+from .services.domain_data import get_coordinators, get_repository, get_todo_manager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -454,9 +455,23 @@ async def _handle_scan_barcode(
         result = await coordinator.async_scan_barcode(
             barcode, action, amount, inventory_id, price=price
         )
-        connection.send_result(msg["id"], result)
-    except ValueError as exc:
+    except HomeAssistantError as exc:
         connection.send_error(msg["id"], "scan_failed", str(exc))
+        return
+
+    connection.send_result(msg["id"], result)
+
+    if result.get("success") and action in ("increment", "decrement"):
+        todo_manager = get_todo_manager(hass)
+        if todo_manager:
+            item_name: str = result["item_name"]
+            resolved_inventory_id: str = result["inventory_id"]
+            item_data = await coordinator.async_get_item(resolved_inventory_id, item_name)
+            if item_data:
+                if action == "decrement":
+                    await todo_manager.check_and_add_item(item_name, item_data)  # type: ignore[arg-type]
+                else:
+                    await todo_manager.check_and_remove_item(item_name, item_data)  # type: ignore[arg-type]
 
 
 @websocket_api.websocket_command(
@@ -480,20 +495,29 @@ async def _handle_lookup_barcode_product(
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Look up a barcode in an external product database."""
+    """Look up a barcode, checking internal inventory first, then external providers."""
     barcode = msg["barcode"]
-    repository = get_repository(hass)
-    config = await repository.get_barcode_provider_config() if repository else {}
-    provider_name = config.get("provider")
-    provider = create_provider(hass, provider_name)
-    try:
-        product = await provider.async_lookup(barcode)
-    finally:
-        await provider.async_close()
-    if product is None:
-        connection.send_result(msg["id"], {"found": False, "barcode": barcode})
-    else:
-        connection.send_result(msg["id"], {"found": True, "barcode": barcode, "product": product})
+
+    # Check if an item with this barcode already exists in any inventory
+    coordinators = get_coordinators(hass)
+    if coordinators:
+        coordinator = next(iter(coordinators.values()))
+        existing = await coordinator.async_lookup_by_barcode(barcode)
+        if existing:
+            item = existing[0]
+            product: dict[str, Any] = {"name": item.get("name", "")}
+            if item.get("description"):
+                product["description"] = item["description"]
+            if item.get("category"):
+                product["category"] = item["category"]
+            if item.get("unit"):
+                product["unit"] = item["unit"]
+            results = [{"provider": "inventory", "found": True, "product": product}]
+            connection.send_result(msg["id"], {"barcode": barcode, "results": results})
+            return
+
+    results = await async_lookup_barcode_all_providers(hass, barcode)
+    connection.send_result(msg["id"], {"barcode": barcode, "results": results})
 
 
 async def _handle_get_barcode_provider_config(

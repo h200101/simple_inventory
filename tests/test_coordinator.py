@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import EventBus, HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.simple_inventory.const import (
     DOMAIN,
@@ -840,7 +841,7 @@ async def test_resolve_item_name_barcode_not_found(
 ) -> None:
     mock_repository.get_item_by_barcode = AsyncMock(return_value=None)
 
-    with pytest.raises(ValueError, match="No item found for barcode"):
+    with pytest.raises(ServiceValidationError, match="No item found for barcode"):
         await coordinator._resolve_item_name("kitchen_123", None, "MISSING")
 
 
@@ -848,7 +849,7 @@ async def test_resolve_item_name_barcode_not_found(
 async def test_resolve_item_name_neither(
     coordinator: SimpleInventoryCoordinator,
 ) -> None:
-    with pytest.raises(ValueError, match="Either 'name' or 'barcode' is required"):
+    with pytest.raises(ServiceValidationError, match="Either 'name' or 'barcode' is required"):
         await coordinator._resolve_item_name("kitchen_123", None, None)
 
 
@@ -856,7 +857,7 @@ async def test_resolve_item_name_neither(
 async def test_resolve_item_name_empty_strings(
     coordinator: SimpleInventoryCoordinator,
 ) -> None:
-    with pytest.raises(ValueError, match="Either 'name' or 'barcode' is required"):
+    with pytest.raises(ServiceValidationError, match="Either 'name' or 'barcode' is required"):
         await coordinator._resolve_item_name("kitchen_123", "", "")
 
 
@@ -1677,7 +1678,7 @@ async def test_scan_barcode_not_found(
 ) -> None:
     mock_repository.get_item_by_barcode_global = AsyncMock(return_value=[])
 
-    with pytest.raises(ValueError, match="No item found for barcode"):
+    with pytest.raises(ServiceValidationError, match="No item found for barcode"):
         await coordinator.async_scan_barcode("000000", "lookup")
 
 
@@ -1692,7 +1693,7 @@ async def test_scan_barcode_ambiguous(
         ]
     )
 
-    with pytest.raises(ValueError, match="multiple inventories"):
+    with pytest.raises(ServiceValidationError, match="multiple inventories"):
         await coordinator.async_scan_barcode("123456", "increment")
 
 

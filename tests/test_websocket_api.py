@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.simple_inventory.const import DOMAIN
 from custom_components.simple_inventory.websocket_api import (
@@ -549,12 +550,48 @@ class TestHandleScanBarcode:
             82, "no_inventories", "No inventories configured"
         )
 
+    async def test_scan_decrement_calls_todo_add(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
+        """WebSocket scan_barcode decrement must trigger check_and_add_item."""
+        item_data = {"name": "Milk", "quantity": 0.0, "auto_add_enabled": True}
+        mock_coordinator_ws.async_scan_barcode = AsyncMock(
+            return_value={
+                "action": "decrement",
+                "success": True,
+                "item_name": "Milk",
+                "inventory_id": "inv1",
+                "amount": 1.0,
+            }
+        )
+        mock_coordinator_ws.async_get_item = AsyncMock(return_value=item_data)
+
+        mock_todo_manager = MagicMock()
+        mock_todo_manager.check_and_add_item = AsyncMock()
+        mock_todo_manager.check_and_remove_item = AsyncMock()
+        hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
+        hass_mock.data[DOMAIN]["todo_manager"] = mock_todo_manager
+
+        msg = {
+            "id": 84,
+            "type": f"{DOMAIN}/scan_barcode",
+            "barcode": "123456",
+            "action": "decrement",
+            "amount": 1.0,
+            "inventory_id": "inv1",
+        }
+
+        await _handle_scan_barcode(hass_mock, mock_connection, msg)
+
+        mock_todo_manager.check_and_add_item.assert_awaited_once_with("Milk", item_data)
+        mock_todo_manager.check_and_remove_item.assert_not_called()
+
     async def test_scan_error_forwarded(
         self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
     ) -> None:
         hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
         mock_coordinator_ws.async_scan_barcode = AsyncMock(
-            side_effect=ValueError("No item found for barcode '000' in any inventory")
+            side_effect=ServiceValidationError("No item found for barcode '000' in any inventory")
         )
         msg = {
             "id": 83,
@@ -571,45 +608,86 @@ class TestHandleScanBarcode:
 
 
 class TestHandleLookupBarcodeProduct:
-    async def test_lookup_found(self, hass_mock: MagicMock, mock_connection: MagicMock) -> None:
-        mock_repo = MagicMock()
-        mock_repo.get_barcode_provider_config = AsyncMock(return_value={})
-        hass_mock.data[DOMAIN]["repository"] = mock_repo
-
-        product = {"name": "Tomato Soup", "brand": "Campbell's"}
-        mock_provider = MagicMock()
-        mock_provider.async_lookup = AsyncMock(return_value=product)
-        mock_provider.async_close = AsyncMock()
+    async def test_existing_item_skips_external_lookup(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
+        mock_coordinator_ws.async_lookup_by_barcode = AsyncMock(
+            return_value=[
+                {"name": "Milk", "description": "Whole milk", "category": "Dairy", "unit": "L"}
+            ]
+        )
+        hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
 
         with patch(
-            "custom_components.simple_inventory.websocket_api.create_provider",
-            return_value=mock_provider,
+            "custom_components.simple_inventory.websocket_api.async_lookup_barcode_all_providers",
+            new_callable=AsyncMock,
+        ) as mock_external:
+            msg = {"id": 90, "type": f"{DOMAIN}/lookup_barcode_product", "barcode": "123456"}
+            await _handle_lookup_barcode_product(hass_mock, mock_connection, msg)
+
+        mock_external.assert_not_called()
+        mock_connection.send_result.assert_called_once_with(
+            90,
+            {
+                "barcode": "123456",
+                "results": [
+                    {
+                        "provider": "inventory",
+                        "found": True,
+                        "product": {
+                            "name": "Milk",
+                            "description": "Whole milk",
+                            "category": "Dairy",
+                            "unit": "L",
+                        },
+                    }
+                ],
+            },
+        )
+
+    async def test_external_lookup_when_no_existing_item(
+        self, hass_mock: MagicMock, mock_connection: MagicMock, mock_coordinator_ws: MagicMock
+    ) -> None:
+        mock_coordinator_ws.async_lookup_by_barcode = AsyncMock(return_value=[])
+        hass_mock.data[DOMAIN]["coordinators"]["inv1"] = mock_coordinator_ws
+
+        results = [
+            {"provider": "openfoodfacts", "found": True, "product": {"name": "Tomato Soup"}},
+            {"provider": "openbeautyfacts", "found": False},
+            {"provider": "openpetfoodfacts", "found": False},
+        ]
+
+        with patch(
+            "custom_components.simple_inventory.websocket_api.async_lookup_barcode_all_providers",
+            new_callable=AsyncMock,
+            return_value=results,
         ):
             msg = {"id": 90, "type": f"{DOMAIN}/lookup_barcode_product", "barcode": "123456"}
             await _handle_lookup_barcode_product(hass_mock, mock_connection, msg)
 
         mock_connection.send_result.assert_called_once_with(
-            90, {"found": True, "barcode": "123456", "product": product}
+            90, {"barcode": "123456", "results": results}
         )
 
-    async def test_lookup_not_found(self, hass_mock: MagicMock, mock_connection: MagicMock) -> None:
-        mock_repo = MagicMock()
-        mock_repo.get_barcode_provider_config = AsyncMock(return_value={})
-        hass_mock.data[DOMAIN]["repository"] = mock_repo
-
-        mock_provider = MagicMock()
-        mock_provider.async_lookup = AsyncMock(return_value=None)
-        mock_provider.async_close = AsyncMock()
+    async def test_external_lookup_when_no_coordinators(
+        self, hass_mock: MagicMock, mock_connection: MagicMock
+    ) -> None:
+        results = [
+            {"provider": "openfoodfacts", "found": False},
+            {"provider": "openbeautyfacts", "found": False},
+            {"provider": "openpetfoodfacts", "found": False},
+        ]
 
         with patch(
-            "custom_components.simple_inventory.websocket_api.create_provider",
-            return_value=mock_provider,
+            "custom_components.simple_inventory.websocket_api.async_lookup_barcode_all_providers",
+            new_callable=AsyncMock,
+            return_value=results,
         ):
             msg = {"id": 91, "type": f"{DOMAIN}/lookup_barcode_product", "barcode": "000000"}
             await _handle_lookup_barcode_product(hass_mock, mock_connection, msg)
 
         mock_connection.send_result.assert_called_once_with(
-            91, {"found": False, "barcode": "000000"}
+            91, {"barcode": "000000", "results": results}
         )
 
 

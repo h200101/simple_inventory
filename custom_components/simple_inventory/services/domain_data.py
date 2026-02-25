@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from homeassistant.core import HomeAssistant
 
@@ -8,6 +8,9 @@ from ..const import DOMAIN
 from ..coordinator import SimpleInventoryCoordinator
 from ..storage.repository import InventoryRepository
 from ..types import SimpleInventoryDomainData
+
+if TYPE_CHECKING:
+    from ..todo_manager import TodoManager
 
 
 def get_domain_data(hass: HomeAssistant) -> SimpleInventoryDomainData | None:
@@ -32,3 +35,11 @@ def get_repository(hass: HomeAssistant) -> InventoryRepository | None:
     if domain_data is None:
         return None
     return domain_data["repository"]
+
+
+def get_todo_manager(hass: HomeAssistant) -> "TodoManager | None":
+    """Return the todo manager if available."""
+    domain_data = get_domain_data(hass)
+    if domain_data is None:
+        return None
+    return domain_data.get("todo_manager")
