@@ -156,32 +156,6 @@
       },
       "name": "Zmanjšaj količino"
     },
-    "increment_item": {
-      "description": "Povečaj količino predmeta",
-      "fields": {
-        "amount": {
-          "description": "Količina za povečanje",
-          "name": "Količina"
-        },
-        "barcode": {
-          "description": "Črtna koda (namesto imena)",
-          "name": "Črtna koda"
-        },
-        "inventory_id": {
-          "description": "ID zaloge",
-          "name": "ID zaloge"
-        },
-        "name": {
-          "description": "Ime predmeta",
-          "name": "Ime predmeta"
-        },
-        "price": {
-          "description": "Cena na enoto za ta vnos",
-          "name": "Cena"
-        }
-      },
-      "name": "Povečaj količino"
-    },
     "get_item_consumption_rates": {
       "description": "Pridobi analitiko porabe za določen predmet na podlagi zgodovine zmanjševanja količine",
       "fields": {
@@ -218,6 +192,32 @@
       "description": "Vrni seznam vseh predmetov, razvrščen po zalogah",
       "fields": {},
       "name": "Pridobi predmete iz vseh zalog"
+    },
+    "increment_item": {
+      "description": "Povečaj količino predmeta",
+      "fields": {
+        "amount": {
+          "description": "Količina za povečanje",
+          "name": "Količina"
+        },
+        "barcode": {
+          "description": "Črtna koda (namesto imena)",
+          "name": "Črtna koda"
+        },
+        "inventory_id": {
+          "description": "ID zaloge",
+          "name": "ID zaloge"
+        },
+        "name": {
+          "description": "Ime predmeta",
+          "name": "Ime predmeta"
+        },
+        "price": {
+          "description": "Cena na enoto za ta vnos",
+          "name": "Cena"
+        }
+      },
+      "name": "Povečaj količino"
     },
     "lookup_barcode_product": {
       "description": "Poišči predmet po črtni kodi v zunanji podatkovni bazi",
